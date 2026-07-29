@@ -4,52 +4,74 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <link rel="icon" type="image/svg+xml" href="/favicon.svg">
-  <title>{% block title %}Azure OpenAI Proxy{% endblock %}</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500;600&amp;display=swap" rel="stylesheet">
+  <title>{% block title %}Hive Inference Proxy{% endblock %}</title>
   <script src="https://unpkg.com/htmx.org@1.9.12" defer></script>
   <style>
     :root {
-      --bg: #0f1115;
-      --panel: #181b22;
-      --border: #262b35;
-      --fg: #e8ecf1;
-      --muted: #8a93a3;
-      --accent: #4f8cff;
+      --bg: #dce8f0;
+      --nav: #162030;
+      --panel: rgba(10, 14, 25, 0.94);
+      --panel-soft: rgba(22, 32, 48, 0.94);
+      --border: rgba(56, 189, 248, 0.24);
+      --fg: #e7e7de;
+      --muted: #9db2c3;
+      --accent: #38bdf8;
+      --accent-hover: #60cbf8;
       --danger: #ff6b6b;
       --ok: #2bd07f;
-      --warn: #f5a623;
+      --warn: #f59e0b;
+      --shadow: 0 18px 40px rgba(7, 9, 15, 0.28);
     }
     * { box-sizing: border-box; }
     body {
       margin: 0;
-      font: 14px/1.5 ui-sans-serif, system-ui, -apple-system, sans-serif;
-      background: var(--bg);
+      min-height: 100vh;
+      font: 13px/1.6 'Fira Code', 'Consolas', 'Courier New', monospace;
+      background-color: var(--bg);
+      background-image:
+        radial-gradient(circle at 1px 1px, rgba(154, 184, 204, 0.72) 1.2px, transparent 1.3px),
+        linear-gradient(30deg, transparent 24%, rgba(184, 207, 224, 0.48) 25%, rgba(184, 207, 224, 0.48) 26%, transparent 27%, transparent 74%, rgba(184, 207, 224, 0.48) 75%, rgba(184, 207, 224, 0.48) 76%, transparent 77%);
+      background-size: 28px 28px, 56px 96px;
       color: var(--fg);
     }
     a { color: var(--accent); text-decoration: none; }
-    a:hover { text-decoration: underline; }
+    a:hover { color: var(--accent-hover); text-decoration: underline; }
     nav {
-      background: var(--panel);
-      border-bottom: 1px solid var(--border);
-      padding: 12px 24px;
+      position: sticky;
+      top: 0;
+      z-index: 50;
+      min-height: 56px;
+      background: var(--nav);
+      border-bottom: 1px solid rgba(56, 189, 248, 0.18);
+      padding: 9px 32px;
       display: flex;
       align-items: center;
       gap: 16px;
+      box-shadow: 0 8px 24px rgba(7, 9, 15, 0.14);
     }
-    nav .brand { font-weight: 600; display: inline-flex; align-items: center; gap: 8px; }
+    nav .brand { display: inline-flex; align-items: center; gap: 9px; color: var(--fg); font-weight: 600; letter-spacing: .03em; }
+    nav .brand:hover { color: var(--fg); text-decoration: none; }
+    .brand-hive, .brand-service { text-shadow: 0 0 5px var(--accent), 0 0 10px var(--accent), 0 0 15px #0ea5e9; }
+    .brand-service { white-space: nowrap; }
+    .cursor-blink { color: var(--accent); animation: cursor-blink 1s step-end infinite; }
+    @keyframes cursor-blink { 0%, 50% { opacity: 1; } 50.01%, 100% { opacity: 0; } }
     nav .brand .brand-mark { display: block; }
     nav .brand .brand-mark:hover { cursor: default; }
     nav .spacer { flex: 1; }
-    main { max-width: 960px; margin: 32px auto; padding: 0 24px; }
-    h1 { margin-top: 0; font-size: 24px; }
+    main { max-width: 1080px; margin: 32px auto; padding: 0 24px 48px; }
+    h1 { margin-top: 0; color: #f8fbff; font-size: 24px; }
     h2 { margin-top: 32px; font-size: 18px; color: var(--muted); }
     label { display: block; margin: 12px 0 4px; color: var(--muted); }
     input[type="text"], input[type="password"], input[type="number"] {
       width: 100%;
       height: 36px;
       padding: 0 10px;
-      background: var(--panel);
+      background: var(--panel-soft);
       border: 1px solid var(--border);
-      border-radius: 4px;
+      border-radius: 6px;
       color: var(--fg);
       font: inherit;
       vertical-align: middle;
@@ -58,9 +80,9 @@
     textarea {
       width: 100%;
       padding: 8px 10px;
-      background: var(--panel);
+      background: var(--panel-soft);
       border: 1px solid var(--border);
-      border-radius: 4px;
+      border-radius: 6px;
       color: var(--fg);
       font: inherit;
       box-sizing: border-box;
@@ -74,7 +96,7 @@
       background: var(--accent);
       color: white;
       border: 0;
-      border-radius: 4px;
+      border-radius: 5px;
       font: inherit;
       line-height: 1;
       cursor: pointer;
@@ -84,7 +106,7 @@
       box-sizing: border-box;
     }
     button.danger, .button.danger { background: var(--danger); }
-    button:hover, .button:hover { filter: brightness(1.1); text-decoration: none; }
+    button:hover, .button:hover { background: var(--accent-hover); filter: none; text-decoration: none; }
     button:disabled, .button:disabled {
       opacity: 0.5;
       cursor: not-allowed;
@@ -110,11 +132,12 @@
     td.btn-cell form > button,
     td.btn-cell form > .button { width: 100%; }
     .card {
-      background: var(--panel);
+      background: linear-gradient(180deg, var(--panel), var(--panel-soft));
       border: 1px solid var(--border);
-      border-radius: 6px;
+      border-radius: 10px;
       padding: 20px;
       margin: 16px 0;
+      box-shadow: var(--shadow);
     }
     .error { color: var(--danger); }
     .ok { color: var(--ok); }
@@ -122,10 +145,10 @@
     th, td { text-align: left; padding: 8px 6px; border-bottom: 1px solid var(--border); }
     th { color: var(--muted); font-weight: 500; }
     .raw-key {
-      background: #20242c;
+      background: rgba(10, 14, 25, 0.78);
       border: 1px dashed var(--accent);
       padding: 12px;
-      border-radius: 4px;
+      border-radius: 6px;
       font-family: ui-monospace, SFMono-Regular, monospace;
       word-break: break-all;
     }
@@ -149,7 +172,7 @@
       min-width: 180px;
       background: var(--panel);
       border: 1px solid var(--border);
-      border-radius: 4px;
+      border-radius: 10px;
       padding: 4px 0;
       box-shadow: 0 6px 16px rgba(0,0,0,0.45);
       z-index: 10;
@@ -172,9 +195,9 @@
       align-items: center;
       gap: 16px;
       padding: 10px 14px;
-      background: var(--panel);
+      background: var(--panel-soft);
       border: 1px solid var(--border);
-      border-radius: 6px;
+      border-radius: 8px;
       margin: 6px 0;
     }
     .model-row .model-name { font-weight: 500; flex: 1; }
@@ -212,19 +235,35 @@
        so primary actions (Save / Delete) line up at equal size. */
     .actions.equal-width > button,
     .actions.equal-width > .button { min-width: 96px; }
+    .auth-shell { display: flex; justify-content: center; padding: 48px 24px; }
+    .login-panel { width: min(480px, 100%); padding: 32px; }
+    .login-kicker { margin: 0 0 12px; color: var(--accent); font-size: 11px; letter-spacing: .22em; text-transform: uppercase; }
+    .login-copy { margin: 0 0 24px; color: var(--muted); }
+    .login-error { margin-bottom: 16px; padding: 12px 14px; border: 1px solid rgba(245, 158, 11, .4); border-radius: 8px; background: rgba(245, 158, 11, .12); color: #fde68a; }
+    .login-form button { width: 100%; margin-top: 20px; font-weight: 600; }
+    @media (max-width: 700px) {
+      nav { padding: 9px 16px; gap: 10px; flex-wrap: wrap; }
+      nav .brand { width: 100%; }
+      nav .spacer { display: none; }
+      main { margin-top: 20px; padding-inline: 14px; }
+      .form-row { flex-direction: column; }
+      .card { overflow-x: auto; }
+      .auth-shell { padding: 24px 14px; }
+      .login-panel { padding: 22px; }
+    }
   </style>
 </head>
 <body>
   {% block nav %}
   <nav>
-    <span class="brand">
-      Azure
+    <a class="brand" href="/status">
+      <span class="brand-hive">hive</span>
       <svg class="brand-mark" width="22" height="22" viewBox="0 0 32 32" role="img" aria-label="Service status">
         <title id="brand-status-title">Status: checking…</title>
         <defs>
           <linearGradient id="brandbg" x1="0" y1="0" x2="1" y2="1">
-            <stop offset="0" stop-color="#5b94ff"/>
-            <stop offset="1" stop-color="#3a6fe0"/>
+            <stop offset="0" stop-color="#38bdf8"/>
+            <stop offset="1" stop-color="#0ea5e9"/>
           </linearGradient>
         </defs>
         <rect width="32" height="32" rx="7" fill="url(#brandbg)"/>
@@ -233,8 +272,8 @@
         <circle cx="24.5" cy="16" r="2.5" fill="#ffffff"/>
         <circle id="brand-hub" cx="16" cy="16" r="5" fill="#2bd07f" stroke="#ffffff" stroke-width="2"/>
       </svg>
-      Proxy
-    </span>
+      <span class="brand-service">[proxy &gt;<span class="cursor-blink">&#9642;</span>]</span>
+    </a>
 
     {% if request.session.get('admin') %}
     <div class="dropdown">

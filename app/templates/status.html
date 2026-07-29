@@ -1,11 +1,11 @@
 {% extends "_base.html" %}
-{% block title %}Status — Azure Proxy{% endblock %}
+{% block title %}Status — Hive Inference Proxy{% endblock %}
 {% set _colors = {'ok': '#2bd07f', 'degraded': '#f5a623', 'outage': '#ff6b6b'} %}
 {% block content %}
 <style>
   .status-banner {
     padding: 18px 24px; border-radius: 8px; text-align: center;
-    font-size: 20px; font-weight: 600; color: #0f1115; margin-bottom: 24px;
+    font-size: 20px; font-weight: 600; color: #162030; margin-bottom: 24px;
   }
   .grid {
     display: grid; gap: 16px; margin: 0 0 24px;
@@ -78,7 +78,7 @@
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
 <script>
   const COLORS = { ok: '#2bd07f', degraded: '#f5a623', outage: '#ff6b6b' };
-  const GRID = '#262b35', AXIS = '#8a93a3';
+  const GRID = 'rgba(56, 189, 248, 0.18)', AXIS = '#9db2c3';
   const charts = {};
 
   function fmtTime(iso) {
@@ -153,7 +153,7 @@
     document.getElementById('sum-err').textContent = j.summary.errors.toLocaleString();
 
     const labels = j.series.buckets.map(fmtTime);
-    makeChart('chart-req', 'Requests', labels, j.series.requests, '#4f8cff');
+    makeChart('chart-req', 'Requests', labels, j.series.requests, '#38bdf8');
     makeChart('chart-err', 'Errors', labels, j.series.errors, '#ff6b6b');
     makeChart('chart-lat', 'Avg latency (ms)', labels, j.series.avg_ms, '#2bd07f');
 
