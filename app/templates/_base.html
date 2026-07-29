@@ -1,0 +1,294 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg">
+  <title>{% block title %}Azure OpenAI Proxy{% endblock %}</title>
+  <script src="https://unpkg.com/htmx.org@1.9.12" defer></script>
+  <style>
+    :root {
+      --bg: #0f1115;
+      --panel: #181b22;
+      --border: #262b35;
+      --fg: #e8ecf1;
+      --muted: #8a93a3;
+      --accent: #4f8cff;
+      --danger: #ff6b6b;
+      --ok: #2bd07f;
+      --warn: #f5a623;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font: 14px/1.5 ui-sans-serif, system-ui, -apple-system, sans-serif;
+      background: var(--bg);
+      color: var(--fg);
+    }
+    a { color: var(--accent); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    nav {
+      background: var(--panel);
+      border-bottom: 1px solid var(--border);
+      padding: 12px 24px;
+      display: flex;
+      align-items: center;
+      gap: 16px;
+    }
+    nav .brand { font-weight: 600; display: inline-flex; align-items: center; gap: 8px; }
+    nav .brand .brand-mark { display: block; }
+    nav .brand .brand-mark:hover { cursor: default; }
+    nav .spacer { flex: 1; }
+    main { max-width: 960px; margin: 32px auto; padding: 0 24px; }
+    h1 { margin-top: 0; font-size: 24px; }
+    h2 { margin-top: 32px; font-size: 18px; color: var(--muted); }
+    label { display: block; margin: 12px 0 4px; color: var(--muted); }
+    input[type="text"], input[type="password"], input[type="number"] {
+      width: 100%;
+      height: 36px;
+      padding: 0 10px;
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      color: var(--fg);
+      font: inherit;
+      vertical-align: middle;
+      box-sizing: border-box;
+    }
+    textarea {
+      width: 100%;
+      padding: 8px 10px;
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      color: var(--fg);
+      font: inherit;
+      box-sizing: border-box;
+    }
+    button, .button {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      height: 36px;
+      padding: 0 16px;
+      background: var(--accent);
+      color: white;
+      border: 0;
+      border-radius: 4px;
+      font: inherit;
+      line-height: 1;
+      cursor: pointer;
+      vertical-align: middle;
+      white-space: nowrap;
+      text-decoration: none;
+      box-sizing: border-box;
+    }
+    button.danger, .button.danger { background: var(--danger); }
+    button:hover, .button:hover { filter: brightness(1.1); text-decoration: none; }
+    button:disabled, .button:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+      filter: none;
+    }
+    /* Group of buttons (e.g., in a table cell or under a form). Keeps gaps
+       even and aligns each button on the same baseline. */
+    .actions {
+      display: inline-flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      align-items: center;
+    }
+    .actions form { display: inline; margin: 0; }
+    /* Single-button table cell. Browser auto-sizes the column to the widest
+       button label across all rows, and `width: 100%` makes every button in
+       that column expand to that width — so every button in a vertical
+       group ends up the same size. */
+    td.btn-cell { white-space: nowrap; vertical-align: middle; }
+    td.btn-cell form { display: block; margin: 0; }
+    td.btn-cell > button,
+    td.btn-cell > .button,
+    td.btn-cell form > button,
+    td.btn-cell form > .button { width: 100%; }
+    .card {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 20px;
+      margin: 16px 0;
+    }
+    .error { color: var(--danger); }
+    .ok { color: var(--ok); }
+    table { width: 100%; border-collapse: collapse; }
+    th, td { text-align: left; padding: 8px 6px; border-bottom: 1px solid var(--border); }
+    th { color: var(--muted); font-weight: 500; }
+    .raw-key {
+      background: #20242c;
+      border: 1px dashed var(--accent);
+      padding: 12px;
+      border-radius: 4px;
+      font-family: ui-monospace, SFMono-Regular, monospace;
+      word-break: break-all;
+    }
+    .dropdown { position: relative; display: inline-block; }
+    .dropbtn {
+      background: transparent;
+      color: var(--accent);
+      height: auto;
+      padding: 4px 8px;
+      border: 0;
+      cursor: pointer;
+      font: inherit;
+    }
+    .dropbtn:hover { text-decoration: underline; filter: none; }
+    .dropbtn .caret { font-size: 10px; margin-left: 2px; }
+    .dropmenu {
+      display: none;
+      position: absolute;
+      top: 100%;
+      left: 0;
+      min-width: 180px;
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      padding: 4px 0;
+      box-shadow: 0 6px 16px rgba(0,0,0,0.45);
+      z-index: 10;
+    }
+    .dropmenu a {
+      display: block;
+      padding: 8px 14px;
+      color: var(--fg);
+    }
+    .dropmenu a:hover { background: var(--bg); text-decoration: none; }
+    .dropdown:hover .dropmenu,
+    .dropdown:focus-within .dropmenu { display: block; }
+    /* Two-column form rows for paired fields like name+label or input+output cost. */
+    .form-row { display: flex; gap: 12px; }
+    .form-row > div { flex: 1; min-width: 0; }
+    .form-row label:first-child { margin-top: 0; }
+    /* Compact one-line model summary (name | status | edit). */
+    .model-row {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      padding: 10px 14px;
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      margin: 6px 0;
+    }
+    .model-row .model-name { font-weight: 500; flex: 1; }
+    .model-row .model-status { font-size: 12px; color: var(--muted); }
+    .model-row .model-status.on { color: var(--ok); }
+    .model-row .icon-btn {
+      background: transparent;
+      color: var(--accent);
+      border: 0;
+      height: auto;
+      padding: 4px 8px;
+      cursor: pointer;
+    }
+    .model-row .icon-btn:hover { text-decoration: underline; filter: none; }
+    /* Footer row inside an edit/add card: checkbox on the left, action buttons
+       on the right. Visually groups buttons that may belong to different
+       <form> elements (referenced via the HTML5 `form` attribute). */
+    .form-footer {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      margin-top: 16px;
+      padding-top: 12px;
+      border-top: 1px solid var(--border);
+    }
+    .form-footer .checkbox-label {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      margin: 0;
+      color: var(--fg);
+    }
+    /* Modifier on .actions: every button in the group gets the same min-width
+       so primary actions (Save / Delete) line up at equal size. */
+    .actions.equal-width > button,
+    .actions.equal-width > .button { min-width: 96px; }
+  </style>
+</head>
+<body>
+  {% block nav %}
+  <nav>
+    <span class="brand">
+      Azure
+      <svg class="brand-mark" width="22" height="22" viewBox="0 0 32 32" role="img" aria-label="Service status">
+        <title id="brand-status-title">Status: checking…</title>
+        <defs>
+          <linearGradient id="brandbg" x1="0" y1="0" x2="1" y2="1">
+            <stop offset="0" stop-color="#5b94ff"/>
+            <stop offset="1" stop-color="#3a6fe0"/>
+          </linearGradient>
+        </defs>
+        <rect width="32" height="32" rx="7" fill="url(#brandbg)"/>
+        <path d="M7.5 16 H24.5" stroke="#ffffff" stroke-width="2.2" stroke-linecap="round"/>
+        <circle cx="7.5" cy="16" r="2.5" fill="#ffffff"/>
+        <circle cx="24.5" cy="16" r="2.5" fill="#ffffff"/>
+        <circle id="brand-hub" cx="16" cy="16" r="5" fill="#2bd07f" stroke="#ffffff" stroke-width="2"/>
+      </svg>
+      Proxy
+    </span>
+
+    {% if request.session.get('admin') %}
+    <div class="dropdown">
+      <button class="dropbtn" type="button">Admin <span class="caret">▾</span></button>
+      <div class="dropmenu">
+        <a href="/admin/clients">Clients</a>
+        <a href="/admin/credentials">Credentials</a>
+        <a href="/admin/models">Models</a>
+        <a href="/admin/usage">Usage</a>
+      </div>
+    </div>
+
+    {% if request.url.path != '/status' %}
+    <a href="/status">Status</a>
+    {% endif %}
+
+    <span class="spacer"></span>
+    <span>admin</span>
+    <form method="post" action="/logout" style="display:inline">
+      <button type="submit">Log out</button>
+    </form>
+    {% else %}
+    <span class="spacer"></span>
+    <a href="/login">Log in</a>
+    {% endif %}
+  </nav>
+  {% endblock %}
+  <main>
+    {% block content %}{% endblock %}
+  </main>
+  <script>
+    // Tie the nav brand hub to live service health: poll the same aggregate
+    // snapshot the /status page uses and recolor the icon (green/amber/red).
+    (function () {
+      var hub = document.getElementById('brand-hub');
+      if (!hub) return;  // no nav on this page (e.g. login)
+      // The /status page already polls /status/data on its own cadence and
+      // drives the hub there — don't double-fetch.
+      if (document.getElementById('banner')) return;
+      var title = document.getElementById('brand-status-title');
+      var COLORS = { ok: '#2bd07f', degraded: '#f5a623', outage: '#ff6b6b' };
+      function paint() {
+        fetch('/status/data', { headers: { 'Accept': 'application/json' } })
+          .then(function (r) { return r.ok ? r.json() : null; })
+          .then(function (d) {
+            if (!d || !d.overall) return;
+            hub.setAttribute('fill', COLORS[d.overall.level] || '#8a93a3');
+            if (title) title.textContent = 'Status: ' + (d.overall.label || d.overall.level);
+          })
+          .catch(function () { /* keep last-known color on a transient failure */ });
+      }
+      paint();
+      setInterval(paint, 60000);
+    })();
+  </script>
+</body>
+</html>

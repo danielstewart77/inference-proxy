@@ -1,0 +1,35 @@
+# Secrets
+.env
+proxy_keys.json
+
+# SSL certificates
+*.pem
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Docker
+docker-compose.override.yml
+
+# Claude Code
+.claude/
+
+# Logs
+*.log
+
+# SQLite database
+data/
+.env.ulbackup

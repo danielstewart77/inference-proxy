@@ -1,0 +1,23 @@
+{% extends "_base.html" %}
+{% block title %}Models — Admin{% endblock %}
+{% block content %}
+<h1>Models</h1>
+<p>Each deployment is self-contained: target URI, credential, and optional api-version.
+   The path of the target URI determines which proxy route can use it
+   (<code>/anthropic/v1/messages</code> → <code>/v1/messages</code>;
+   <code>/openai/responses</code> → <code>/v1/responses</code> + <code>/v1/chat/completions</code>;
+   <code>/chat/completions</code> → <code>/v1/chat/completions</code>).</p>
+
+<div id="add-section">
+  {% include "admin/_models_add_button.html" %}
+</div>
+
+<h2>Deployments</h2>
+<div id="model-list">
+  {% for m in models %}
+    {% include "admin/_models_row.html" %}
+  {% else %}
+    <p style="color: var(--muted);">No deployments yet — click "Add deployment" to create one.</p>
+  {% endfor %}
+</div>
+{% endblock %}

@@ -1,0 +1,7 @@
+services:
+  inference-proxy:
+    volumes:
+      # Opt in only when subscription OAuth is needed. These files contain
+      # live credentials and always remain outside the repository.
+      - ${HOME}/.claude/.credentials.json:/creds/claude.json:ro
+      - ${HOME}/.codex/auth.json:/creds/codex.json:ro
