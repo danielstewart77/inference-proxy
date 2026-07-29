@@ -90,6 +90,17 @@ docker compose -f docker-compose.yml -f docker-compose.oauth.yml up -d --build
 
 Both credential files are mounted read-only and remain outside the repository.
 
+To expose the proxy to Hive Minds and the Hive Control Center on their private
+Docker network, include the Hive override:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.hive.yml up -d --build
+```
+
+The service is then reachable inside that network as
+`http://inference-proxy:8888`. The external `hivemind` network must already
+exist; the Hive stack creates and owns it.
+
 Pick one or the other, never both. The container and a host process share the
 same `data/` directory and the same published port, so a second deployment
 cannot bind the port, and a container built before the newest migration will

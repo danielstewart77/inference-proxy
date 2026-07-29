@@ -22,6 +22,14 @@ def test_oauth_mounts_are_explicit_and_read_only():
     assert "${HOME}/.codex/auth.json:/creds/codex.json:ro" in override
 
 
+def test_hive_override_joins_the_existing_private_network():
+    override = (REPO_ROOT / "docker-compose.hive.yml").read_text()
+
+    assert "external: true" in override
+    assert "name: hivemind" in override
+    assert "inference-proxy:" in override
+
+
 def test_runtime_secret_files_are_ignored():
     ignored = (REPO_ROOT / ".gitignore").read_text().splitlines()
 
