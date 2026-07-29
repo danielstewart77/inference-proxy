@@ -1,0 +1,9 @@
+services:
+  inference-proxy:
+    networks:
+      - hivemind
+
+networks:
+  hivemind:
+    external: true
+    name: hivemind
