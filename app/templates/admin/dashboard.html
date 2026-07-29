@@ -1,0 +1,16 @@
+{% extends "_base.html" %}
+{% block title %}Admin{% endblock %}
+{% block content %}
+<h1>Admin</h1>
+<div class="card">
+  <table>
+    <tbody>
+      <tr><td><a href="/admin/clients">Clients</a></td><td>{{ client_count }}</td></tr>
+      <tr><td>Active proxy keys</td><td>{{ active_key_count }}</td></tr>
+      <tr><td><a href="/admin/credentials">Credentials</a></td><td>{{ credential_count }}</td></tr>
+      <tr><td><a href="/admin/models">Models</a></td><td>{{ model_count }}</td></tr>
+      <tr><td><a href="/admin/usage">Usage</a></td><td>—</td></tr>
+    </tbody>
+  </table>
+</div>
+{% endblock %}

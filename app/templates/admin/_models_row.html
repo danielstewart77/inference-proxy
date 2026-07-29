@@ -1,0 +1,9 @@
+<div class="model-row" id="model-row-{{ m.id }}">
+  <span class="model-name">{{ m.deployment_name }}{% if m.label %} <span style="color: var(--muted); font-weight: 400;">— {{ m.label }}</span>{% endif %}</span>
+  <span class="model-status {% if m.enabled %}on{% endif %}">{% if m.enabled %}enabled{% else %}disabled{% endif %}</span>
+  {% if m.admin_only %}<span class="model-status" style="color: var(--muted);">privileged clients only</span>{% endif %}
+  <button type="button" class="icon-btn"
+          hx-get="/admin/models/{{ m.id }}/_edit-form"
+          hx-target="#model-row-{{ m.id }}"
+          hx-swap="outerHTML">edit</button>
+</div>

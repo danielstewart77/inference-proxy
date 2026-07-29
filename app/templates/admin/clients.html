@@ -1,0 +1,129 @@
+{% extends "_base.html" %}
+{% block title %}Clients — Admin{% endblock %}
+{% block content %}
+<h1>Clients</h1>
+<p>A client is an app or agent that calls the proxy. Each holds one or more
+   keys, so a credential can be rotated by minting a replacement and revoking
+   the old one once the caller has moved over.</p>
+
+{% if new_key %}
+<div class="card">
+  <p>New key for <strong>{{ for_client }}</strong> (shown once — copy it now):</p>
+  <p class="raw-key">{{ new_key }}</p>
+  <p>Only its hash was stored. If you lose it, mint another and revoke this one.</p>
+</div>
+{% endif %}
+
+<h2>Create client</h2>
+<div class="card" style="max-width: 480px;">
+  <form method="post" action="/admin/clients">
+    <label for="new-name">Name</label>
+    <input type="text" id="new-name" name="name" required placeholder="e.g. skippy">
+    <label for="new-kind">Kind</label>
+    <select id="new-kind" name="kind">
+      {% for k in kinds %}
+      <option value="{{ k }}" {% if k == 'app' %}selected{% endif %}>{{ k }}</option>
+      {% endfor %}
+    </select>
+    <label for="new-description">Description (optional)</label>
+    <textarea id="new-description" name="description" rows="2"></textarea>
+    <div class="form-footer">
+      <label class="checkbox-label">
+        <input type="checkbox" name="privileged"> Privileged (may resolve admin-only models)
+      </label>
+      <div class="actions equal-width">
+        <button type="submit">Create</button>
+      </div>
+    </div>
+  </form>
+</div>
+
+<h2>All clients</h2>
+{% for c in clients %}
+<div class="card">
+  <p style="margin: 0 0 12px 0;">
+    <strong>{{ c.name }}</strong>
+    <span style="color: var(--muted);">· {{ c.kind }} · id {{ c.id }}</span>
+    {% if c.disabled %}<span class="error">disabled</span>{% else %}<span class="ok">active</span>{% endif %}
+    {% if c.privileged %}<span style="color: var(--warn);">privileged</span>{% endif %}
+  </p>
+  {% if c.description %}<p style="color: var(--muted); margin: 0 0 12px 0;">{{ c.description }}</p>{% endif %}
+  <p style="color: var(--muted); margin: 0 0 12px 0;">
+    created {{ c.created_at.isoformat() if c.created_at else '' }} ·
+    last seen {{ c.last_seen_at.isoformat() if c.last_seen_at else 'never' }}
+  </p>
+
+  <form id="client-edit-{{ c.id }}" method="post" action="/admin/clients/{{ c.id }}">
+    <label>Name</label>
+    <input type="text" name="name" value="{{ c.name }}" required>
+    <label>Kind</label>
+    <select name="kind">
+      {% for k in kinds %}
+      <option value="{{ k }}" {% if k == c.kind %}selected{% endif %}>{{ k }}</option>
+      {% endfor %}
+    </select>
+    <label>Description</label>
+    <textarea name="description" rows="2">{{ c.description or '' }}</textarea>
+    <div class="form-footer">
+      <label class="checkbox-label">
+        <input type="checkbox" name="privileged" {% if c.privileged %}checked{% endif %}>
+        Privileged (may resolve admin-only models)
+      </label>
+      <div class="actions equal-width">
+        <button type="submit">Save</button>
+      </div>
+    </div>
+  </form>
+
+  <table>
+    <thead>
+      <tr><th>key id</th><th>label</th><th>created</th><th>state</th><th>actions</th></tr>
+    </thead>
+    <tbody>
+      {% for k in c.keys %}
+      <tr>
+        <td>{{ k.id }}</td>
+        <td>{{ k.label }}</td>
+        <td>{{ k.created_at.isoformat() if k.created_at else '' }}</td>
+        <td>{% if k.revoked %}<span class="error">revoked</span>{% else %}<span class="ok">active</span>{% endif %}</td>
+        <td class="btn-cell">
+          {% if not k.revoked %}
+          <form method="post" action="/admin/clients/{{ c.id }}/keys/{{ k.id }}/revoke"
+                onsubmit="return confirm('Revoke key {{ k.id }} ({{ k.label }})?');">
+            <button type="submit" class="danger">Revoke</button>
+          </form>
+          {% endif %}
+        </td>
+      </tr>
+      {% else %}
+      <tr><td colspan="5" style="color: var(--muted)">No keys issued yet.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+
+  <div class="form-footer">
+    <form method="post" action="/admin/clients/{{ c.id }}/keys" class="actions">
+      <input type="text" name="label" placeholder="key label" value="default">
+      <button type="submit">Mint key</button>
+    </form>
+    <div class="actions equal-width">
+      {% if c.disabled %}
+      <form method="post" action="/admin/clients/{{ c.id }}/enable">
+        <button type="submit">Enable</button>
+      </form>
+      {% else %}
+      <form method="post" action="/admin/clients/{{ c.id }}/disable">
+        <button type="submit" class="danger">Disable</button>
+      </form>
+      {% endif %}
+      <form method="post" action="/admin/clients/{{ c.id }}/delete"
+            onsubmit="return confirm('Delete client {{ c.name }} and all its keys?');">
+        <button type="submit" class="danger">Delete</button>
+      </form>
+    </div>
+  </div>
+</div>
+{% else %}
+<p style="color: var(--muted);">No clients yet — create one above.</p>
+{% endfor %}
+{% endblock %}

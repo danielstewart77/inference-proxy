@@ -1,0 +1,167 @@
+{% extends "_base.html" %}
+{% block title %}Status — Azure Proxy{% endblock %}
+{% set _colors = {'ok': '#2bd07f', 'degraded': '#f5a623', 'outage': '#ff6b6b'} %}
+{% block content %}
+<style>
+  .status-banner {
+    padding: 18px 24px; border-radius: 8px; text-align: center;
+    font-size: 20px; font-weight: 600; color: #0f1115; margin-bottom: 24px;
+  }
+  .grid {
+    display: grid; gap: 16px; margin: 0 0 24px;
+    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  }
+  .stat .stat-value { font-size: 28px; font-weight: 600; }
+  .stat .stat-label { color: var(--muted); font-size: 13px; margin-top: 4px; }
+  .comp { display: flex; align-items: center; justify-content: space-between; }
+  .comp .comp-name { font-weight: 500; }
+  .comp .comp-status { font-weight: 600; }
+  .chart-box h2 { margin: 0 0 12px; font-size: 15px; color: var(--fg); }
+  .chart-wrap { position: relative; height: 220px; }
+  .updated { color: var(--muted); font-size: 12px; text-align: right; }
+</style>
+
+<h1>System status</h1>
+
+<div id="banner" class="status-banner" style="background: {{ _colors.get(overall_level, '#2bd07f') }}">
+  {{ overall_label }}
+</div>
+
+<h2>Components</h2>
+<div class="grid">
+  <div class="card comp">
+    <span class="comp-name">Proxy API</span>
+    <span class="comp-status" id="comp-api" style="color: #2bd07f">Operational</span>
+  </div>
+  <div class="card comp">
+    <span class="comp-name">Database</span>
+    <span class="comp-status" id="comp-db"
+      style="color: {{ '#2bd07f' if health.database == 'up' else ('#ff6b6b' if health.database == 'down' else '#8a93a3') }}">
+      {{ 'Operational' if health.database == 'up' else ('Down' if health.database == 'down' else 'Checking…') }}
+    </span>
+  </div>
+  <div class="card comp">
+    <span class="comp-name">Azure upstreams</span>
+    <span class="comp-status" id="comp-up" style="color: #8a93a3">
+      {% if health.upstreams_total %}{{ health.upstreams_up }}/{{ health.upstreams_total }} reachable{% else %}Checking…{% endif %}
+    </span>
+  </div>
+</div>
+
+<h2>Last 24 hours</h2>
+<div class="grid">
+  <div class="card stat">
+    <div class="stat-value" id="sum-req">{{ summary.requests }}</div>
+    <div class="stat-label">Requests</div>
+  </div>
+  <div class="card stat">
+    <div class="stat-value" id="sum-sr">{% if summary.success_rate is not none %}{{ '%.1f' | format(summary.success_rate) }}%{% else %}—{% endif %}</div>
+    <div class="stat-label">Success rate</div>
+  </div>
+  <div class="card stat">
+    <div class="stat-value" id="sum-lat">{% if summary.avg_ms is not none %}{{ summary.avg_ms | round | int }} ms{% else %}—{% endif %}</div>
+    <div class="stat-label">Avg latency</div>
+  </div>
+  <div class="card stat">
+    <div class="stat-value" id="sum-err">{{ summary.errors }}</div>
+    <div class="stat-label">Errors</div>
+  </div>
+</div>
+
+<h2>Trends (last 24 hours, hourly)</h2>
+<div class="card chart-box"><h2>Requests</h2><div class="chart-wrap"><canvas id="chart-req"></canvas></div></div>
+<div class="card chart-box"><h2>Errors</h2><div class="chart-wrap"><canvas id="chart-err"></canvas></div></div>
+<div class="card chart-box"><h2>Average latency (ms)</h2><div class="chart-wrap"><canvas id="chart-lat"></canvas></div></div>
+
+<p class="updated" id="updated">All times UTC.</p>
+
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<script>
+  const COLORS = { ok: '#2bd07f', degraded: '#f5a623', outage: '#ff6b6b' };
+  const GRID = '#262b35', AXIS = '#8a93a3';
+  const charts = {};
+
+  function fmtTime(iso) {
+    if (!iso) return '';
+    // Buckets are UTC-naive ISO strings; force UTC, render local hour.
+    const d = new Date(iso.endsWith('Z') ? iso : iso + 'Z');
+    return d.toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit' });
+  }
+
+  function makeChart(id, label, labels, data, color) {
+    if (charts[id]) {
+      charts[id].data.labels = labels;
+      charts[id].data.datasets[0].data = data;
+      charts[id].update();
+      return;
+    }
+    charts[id] = new Chart(document.getElementById(id), {
+      type: 'line',
+      data: { labels, datasets: [{
+        label, data, borderColor: color, backgroundColor: color + '33',
+        fill: true, tension: 0.3, pointRadius: 0, borderWidth: 2, spanGaps: true,
+      }] },
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        plugins: { legend: { display: false } },
+        scales: {
+          x: { grid: { color: GRID }, ticks: { color: AXIS, maxTicksLimit: 8 } },
+          y: { grid: { color: GRID }, ticks: { color: AXIS }, beginAtZero: true },
+        },
+      },
+    });
+  }
+
+  function setComp(id, textVal, color) {
+    const el = document.getElementById(id);
+    el.textContent = textVal;
+    el.style.color = color;
+  }
+
+  async function refresh() {
+    let j;
+    try {
+      const r = await fetch('/status/data', { cache: 'no-store' });
+      j = await r.json();
+    } catch (e) { return; }  // keep last good render
+
+    const banner = document.getElementById('banner');
+    banner.textContent = j.overall.label;
+    banner.style.background = COLORS[j.overall.level] || COLORS.ok;
+
+    // Keep the shared nav brand-mark hub in sync with overall status.
+    const hub = document.getElementById('brand-hub');
+    if (hub) hub.setAttribute('fill', COLORS[j.overall.level] || COLORS.ok);
+    const hubTitle = document.getElementById('brand-status-title');
+    if (hubTitle) hubTitle.textContent = 'Status: ' + j.overall.label;
+
+    const db = j.health.database;
+    setComp('comp-db',
+      db === 'up' ? 'Operational' : (db === 'down' ? 'Down' : 'Checking…'),
+      db === 'up' ? COLORS.ok : (db === 'down' ? COLORS.outage : AXIS));
+
+    const up = j.health.upstreams_up, total = j.health.upstreams_total;
+    let upColor = AXIS;
+    if (total > 0) upColor = (up === total) ? COLORS.ok : (up === 0 ? COLORS.outage : COLORS.degraded);
+    setComp('comp-up', total ? `${up}/${total} reachable` : 'None configured', upColor);
+
+    document.getElementById('sum-req').textContent = j.summary.requests.toLocaleString();
+    document.getElementById('sum-sr').textContent =
+      j.summary.success_rate === null ? '—' : j.summary.success_rate.toFixed(1) + '%';
+    document.getElementById('sum-lat').textContent =
+      j.summary.avg_ms === null ? '—' : Math.round(j.summary.avg_ms) + ' ms';
+    document.getElementById('sum-err').textContent = j.summary.errors.toLocaleString();
+
+    const labels = j.series.buckets.map(fmtTime);
+    makeChart('chart-req', 'Requests', labels, j.series.requests, '#4f8cff');
+    makeChart('chart-err', 'Errors', labels, j.series.errors, '#ff6b6b');
+    makeChart('chart-lat', 'Avg latency (ms)', labels, j.series.avg_ms, '#2bd07f');
+
+    const stamp = new Date().toLocaleTimeString();
+    document.getElementById('updated').textContent = 'Updated ' + stamp + ' · all times UTC.';
+  }
+
+  refresh();
+  setInterval(refresh, 30000);
+</script>
+{% endblock %}

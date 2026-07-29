@@ -1,0 +1,74 @@
+<div class="card" id="model-row-{{ m.id }}">
+  <p style="margin: 0 0 12px 0;">
+    <strong>{{ m.deployment_name }}</strong>
+    <span style="color: var(--muted);">· id {{ m.id }} · created {{ m.created_at.isoformat() if m.created_at else '' }}</span>
+  </p>
+
+  {# Two sibling forms — buttons in the footer reference them by id via the
+     HTML5 `form` attribute so they can sit on the same visual row. #}
+  <form id="edit-form-{{ m.id }}" method="post" action="/admin/models/{{ m.id }}">
+    <label>Label</label>
+    <input type="text" name="label" value="{{ m.label or '' }}">
+    <label>Target URI</label>
+    <input type="text" name="target_uri" value="{{ m.target_uri or '' }}" required>
+    <label>Auth scheme (how the secret is sent upstream)</label>
+    <select name="auth_scheme">
+      <option value="api_key_header" {% if m.auth_scheme == 'api_key_header' %}selected{% endif %}>api-key header (Azure / Foundry)</option>
+      <option value="bearer" {% if m.auth_scheme == 'bearer' %}selected{% endif %}>Authorization: Bearer (OpenAI / Foundry Anthropic partner route)</option>
+      <option value="x_api_key" {% if m.auth_scheme == 'x_api_key' %}selected{% endif %}>x-api-key header (real Anthropic)</option>
+    </select>
+    <label>Credential</label>
+    <select name="credential_id">
+      <option value="">— none —</option>
+      {% for c in credentials %}
+      <option value="{{ c.id }}" {% if m.credential_id == c.id %}selected{% endif %}>{{ c.name }} ({{ c.kind }})</option>
+      {% endfor %}
+    </select>
+    <label>API version (optional)</label>
+    <input type="text" name="api_version" value="{{ m.api_version or '' }}">
+    <label>Description</label>
+    <textarea name="description" rows="2">{{ m.description or '' }}</textarea>
+    <div class="form-row">
+      <div>
+        <label>Cost per 1M input</label>
+        <input type="text" name="cost_per_million_input" value="{{ m.cost_per_million_input if m.cost_per_million_input is not none else '' }}">
+      </div>
+      <div>
+        <label>Cost per 1M output</label>
+        <input type="text" name="cost_per_million_output" value="{{ m.cost_per_million_output if m.cost_per_million_output is not none else '' }}">
+      </div>
+    </div>
+    <div class="form-row">
+      <div>
+        <label>Cost per 1M cache write</label>
+        <input type="text" name="cost_per_million_cache_write" value="{{ m.cost_per_million_cache_write if m.cost_per_million_cache_write is not none else '' }}">
+      </div>
+      <div>
+        <label>Cost per 1M cache read</label>
+        <input type="text" name="cost_per_million_cache_read" value="{{ m.cost_per_million_cache_read if m.cost_per_million_cache_read is not none else '' }}">
+      </div>
+    </div>
+  </form>
+
+  <form id="delete-form-{{ m.id }}" method="post" action="/admin/models/{{ m.id }}/delete"
+        onsubmit="return confirm('Delete deployment {{ m.deployment_name }}?');"></form>
+
+  <div class="form-footer">
+    <label class="checkbox-label">
+      <input type="checkbox" name="enabled" form="edit-form-{{ m.id }}" {% if m.enabled %}checked{% endif %}>
+      Enabled
+    </label>
+    <label class="checkbox-label">
+      <input type="checkbox" name="admin_only" form="edit-form-{{ m.id }}" {% if m.admin_only %}checked{% endif %}>
+      Privileged clients only
+    </label>
+    <div class="actions equal-width">
+      <button type="button"
+              hx-get="/admin/models/{{ m.id }}/_row"
+              hx-target="#model-row-{{ m.id }}"
+              hx-swap="outerHTML">Cancel</button>
+      <button type="submit" form="edit-form-{{ m.id }}">Save</button>
+      <button type="submit" form="delete-form-{{ m.id }}" class="danger">Delete</button>
+    </div>
+  </div>
+</div>

@@ -1,0 +1,69 @@
+<div class="card" style="max-width: 720px;">
+  <form method="post" action="/admin/models">
+    <div class="form-row">
+      <div>
+        <label for="dn">Deployment name</label>
+        <input type="text" id="dn" name="deployment_name" required>
+      </div>
+      <div>
+        <label for="lbl">Label (display name, optional)</label>
+        <input type="text" id="lbl" name="label">
+      </div>
+    </div>
+    <label for="uri">Target URI (full URL — paste from Azure/Anthropic/OpenAI docs verbatim is fine)</label>
+    <input type="text" id="uri" name="target_uri" required
+           placeholder="https://...services.ai.azure.com/anthropic/v1/messages">
+    <label for="as">Auth scheme (how the secret is sent upstream)</label>
+    <select id="as" name="auth_scheme">
+      <option value="api_key_header">api-key header (Azure / Foundry)</option>
+      <option value="bearer" selected>Authorization: Bearer (OpenAI / Foundry Anthropic partner route)</option>
+      <option value="x_api_key">x-api-key header (real Anthropic)</option>
+    </select>
+    <label for="cred">Credential</label>
+    <select id="cred" name="credential_id">
+      <option value="">— none —</option>
+      {% for c in credentials %}
+      <option value="{{ c.id }}">{{ c.name }} ({{ c.kind }})</option>
+      {% endfor %}
+    </select>
+    <label for="av">API version (optional — leave blank if it's already in the URI)</label>
+    <input type="text" id="av" name="api_version" placeholder="2025-04-01-preview">
+    <label for="desc">Description (optional)</label>
+    <textarea id="desc" name="description" rows="2"></textarea>
+    <div class="form-row">
+      <div>
+        <label for="ci">Cost per 1,000,000 input tokens (USD, optional)</label>
+        <input type="text" id="ci" name="cost_per_million_input" placeholder="e.g. 5.000000">
+      </div>
+      <div>
+        <label for="co">Cost per 1,000,000 output tokens (USD, optional)</label>
+        <input type="text" id="co" name="cost_per_million_output" placeholder="e.g. 15.000000">
+      </div>
+    </div>
+    <div class="form-row">
+      <div>
+        <label for="ccw">Cost per 1M cache-write tokens (USD, optional)</label>
+        <input type="text" id="ccw" name="cost_per_million_cache_write" placeholder="e.g. 6.250000">
+      </div>
+      <div>
+        <label for="ccr">Cost per 1M cache-read tokens (USD, optional)</label>
+        <input type="text" id="ccr" name="cost_per_million_cache_read" placeholder="e.g. 0.500000">
+      </div>
+    </div>
+    <div class="form-footer">
+      <label class="checkbox-label">
+        <input type="checkbox" name="enabled" checked> Enabled
+      </label>
+      <label class="checkbox-label">
+        <input type="checkbox" name="admin_only"> Privileged clients only
+      </label>
+      <div class="actions equal-width">
+        <button type="button"
+                hx-get="/admin/models/_add-button"
+                hx-target="#add-section"
+                hx-swap="innerHTML">Cancel</button>
+        <button type="submit">Save</button>
+      </div>
+    </div>
+  </form>
+</div>
