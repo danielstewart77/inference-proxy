@@ -41,7 +41,13 @@ _FAVICON_SVG = (Path(__file__).resolve().parent / "static" / "favicon.svg").read
 
 
 def create_app() -> FastAPI:
-    app = FastAPI(title="Inference Proxy", version="3.0.0")
+    app = FastAPI(
+        title="Inference Proxy",
+        version="3.0.0",
+        docs_url=None,
+        redoc_url=None,
+        openapi_url=None,
+    )
 
     # Order matters: ConnectionLogger first (sees raw scope), then SessionMiddleware.
     app.add_middleware(ConnectionLoggerMiddleware)

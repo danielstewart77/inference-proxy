@@ -25,7 +25,7 @@ def app(session, monkeypatch):
     monkeypatch.setattr(admin_clients, "require_html_admin", _allow_admin)
     monkeypatch.setattr(admin_clients, "refresh_key_cache", _fake_refresh)
 
-    application = FastAPI()
+    application = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
     application.include_router(admin_clients.router)
     application.dependency_overrides[get_session] = lambda: session
     application.state.refreshed = refreshed
