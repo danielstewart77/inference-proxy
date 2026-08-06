@@ -181,10 +181,18 @@ def resolve_target_uri(row: Model, wire: Optional[str]) -> Optional[str]:
     answer a Claude harness and a Codex harness both. A model with no provider
     falls back to its own stored URI, which is the pre-provider arrangement and
     serves exactly one shape.
+
+    Disabling a provider takes its models with it. Falling back to the URI a
+    migrated row still carries would send traffic to the upstream that was
+    just switched off, and — because that stale URI serves one shape while a
+    provider-attached row is listed for every shape the provider serves — would
+    offer the model to a harness whose requests it cannot answer.
     """
     provider = row.provider
-    if provider is None or not provider.enabled:
+    if provider is None:
         return row.target_uri
+    if not provider.enabled:
+        return None
 
     path = provider.path_for(wire) if wire else None
     if path is None and wire is not None:

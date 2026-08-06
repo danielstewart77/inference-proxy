@@ -6,7 +6,7 @@ from pathlib import Path
 
 from alembic import command
 from alembic.config import Config as AlembicConfig
-from sqlalchemy import create_engine, inspect
+from sqlalchemy import create_engine, inspect, text
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 EXPECTED_TABLES = {"clients", "keys", "credentials", "models", "usage_log"}
@@ -80,3 +80,44 @@ def test_downgrade_drops_everything(tmp_path):
     finally:
         engine.dispose()
     assert not (EXPECTED_TABLES & tables)
+
+
+def test_a_custom_upstream_path_keeps_its_own_uri(tmp_path):
+    """A route this migration cannot classify must go on working.
+
+    Attaching such a row to a provider that serves no shape would resolve
+    nothing, turning a deployment that worked before the upgrade into a 503
+    that nothing in the migration output would have warned about.
+    """
+    db = tmp_path / "proxy.db"
+    cfg = AlembicConfig(str(REPO_ROOT / "alembic.ini"))
+    cfg.set_main_option("script_location", str(REPO_ROOT / "migrations"))
+    cfg.set_main_option("sqlalchemy.url", f"sqlite:///{db}")
+    command.upgrade(cfg, "0003_model_cache_costs")
+
+    engine = create_engine(f"sqlite:///{db}")
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                "INSERT INTO models (deployment_name, target_uri, auth_scheme,"
+                " enabled, admin_only) VALUES ('odd', 'https://vendor.example/infer',"
+                " 'bearer', 1, 0)"
+            )
+        )
+    engine.dispose()
+
+    command.upgrade(cfg, "head")
+
+    engine = create_engine(f"sqlite:///{db}")
+    try:
+        with engine.begin() as conn:
+            row = conn.execute(
+                text("SELECT provider_id, target_uri FROM models WHERE deployment_name='odd'")
+            ).one()
+            providers = conn.execute(text("SELECT COUNT(*) FROM providers")).scalar_one()
+    finally:
+        engine.dispose()
+
+    assert row.provider_id is None
+    assert row.target_uri == "https://vendor.example/infer"
+    assert providers == 0

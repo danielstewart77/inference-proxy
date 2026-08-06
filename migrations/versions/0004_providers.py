@@ -133,9 +133,19 @@ def _backfill() -> None:
     taken: set[str] = set()
     for (base_url, credential_id), group in groups.items():
         host = group["host"]
+        if not group["paths"]:
+            # Every URI here had a path this migration cannot classify — a
+            # custom upstream route. A provider serving no shape resolves
+            # nothing, so these rows keep their own URIs and go on working
+            # exactly as they did, rather than being attached to an upstream
+            # that can never answer them. Guessing the standard paths onto a
+            # host that has already shown it does not use them is how a working
+            # deployment becomes a 503 nothing warned about.
+            continue
         if host not in (_ANTHROPIC_HOST, _CODEX_HOST):
-            # A local OpenAI-compatible server: give it every shape it serves,
-            # which is the whole point of the change.
+            # A local OpenAI-compatible server, recognised by already serving
+            # one of the standard paths: give it the rest, which is the whole
+            # point of the change.
             for column, path in _LOCAL_PATHS.items():
                 group["paths"].setdefault(column, path)
         name = _provider_name(host, taken)

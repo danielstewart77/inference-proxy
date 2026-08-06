@@ -134,3 +134,32 @@ async def test_the_listing_reports_the_label_a_picker_shows(session):
 
     row = (await listing_for(session, wire="anthropic_messages", is_admin=False))["data"][0]
     assert (row["id"], row["label"]) == ("claude-opus-5", "Opus 5")
+
+
+async def test_disabling_a_provider_takes_its_models_with_it(session):
+    """A switched-off upstream must not be reachable through a stale URI.
+
+    A migrated row still carries the target URI it had before providers
+    existed. Falling back to it would send traffic to the upstream that was
+    just disabled — and that URI serves one shape while the row is listed for
+    every shape the provider serves, so a Codex harness would be offered a
+    model only a Claude harness could address.
+    """
+    provider = await _ollama(session)
+    session.add(
+        Model(
+            deployment_name="qwen35-131k",
+            provider_id=provider.id,
+            target_uri="http://192.168.4.64:11434/v1/messages",
+        )
+    )
+    await session.commit()
+    provider.enabled = False
+    await session.commit()
+
+    assert _names(await listing_for(session, wire="anthropic_messages", is_admin=False)) == []
+    assert _names(await listing_for(session, wire="openai_responses", is_admin=False)) == []
+
+    with pytest.raises(Exception) as refused:
+        await resolve_deployment(session, "qwen35-131k", wire="anthropic_messages")
+    assert refused.value.status_code == 503
