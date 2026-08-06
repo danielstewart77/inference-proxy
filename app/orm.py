@@ -128,6 +128,53 @@ class Credential(Base):
     )
 
 
+class Provider(Base):
+    """An upstream that hosts models — Anthropic, the Codex backend, a local
+    Ollama, and whatever is added next.
+
+    A provider owns the host and the credential; a `Model` row owns only the
+    deployment name and its pricing. The three path columns say which request
+    shapes this upstream serves and where each one lives, which is what lets
+    one Ollama model answer a Claude harness and a Codex harness both: the
+    path is chosen by the endpoint the request arrived on, not frozen into the
+    model row. A null path means this upstream does not speak that shape, and
+    a model on it is neither listed to nor resolvable by a harness that does.
+    """
+
+    __tablename__ = "providers"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    name: Mapped[str] = mapped_column(Unicode(64), unique=True, nullable=False)
+    label: Mapped[Optional[str]] = mapped_column(Unicode(128), nullable=True)
+    # Scheme + host (+ any fixed prefix), without a trailing slash.
+    base_url: Mapped[str] = mapped_column(Unicode(512), nullable=False)
+    messages_path: Mapped[Optional[str]] = mapped_column(Unicode(256), nullable=True)
+    responses_path: Mapped[Optional[str]] = mapped_column(Unicode(256), nullable=True)
+    chat_completions_path: Mapped[Optional[str]] = mapped_column(
+        Unicode(256), nullable=True
+    )
+    credential_id: Mapped[Optional[int]] = mapped_column(
+        Integer, ForeignKey("credentials.id", ondelete="SET NULL"), nullable=True
+    )
+    auth_scheme: Mapped[str] = mapped_column(
+        Unicode(32), nullable=False, server_default="bearer"
+    )
+    api_version: Mapped[Optional[str]] = mapped_column(Unicode(64), nullable=True)
+    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="1")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now()
+    )
+
+    credential: Mapped[Optional[Credential]] = relationship("Credential")
+
+    def path_for(self, wire: str) -> Optional[str]:
+        return {
+            "anthropic_messages": self.messages_path,
+            "openai_responses": self.responses_path,
+            "chat_completions": self.chat_completions_path,
+        }.get(wire)
+
+
 class Model(Base):
     """Each row is a self-contained deployment: its own target URI, credential,
     and optional api_version. The path of `target_uri` determines the upstream
@@ -149,6 +196,17 @@ class Model(Base):
     credential_id: Mapped[Optional[int]] = mapped_column(
         Integer, ForeignKey("credentials.id", ondelete="SET NULL"), nullable=True
     )
+    # The upstream that hosts this model. When set it supplies the host, the
+    # credential and the per-shape path, and `target_uri` is ignored.
+    provider_id: Mapped[Optional[int]] = mapped_column(
+        Integer, ForeignKey("providers.id", ondelete="SET NULL"), nullable=True
+    )
+    # Which harnesses may see and use this model, comma-separated ('claude',
+    # 'codex'). Null — the default — means every harness the provider can
+    # serve. Set it only to withhold a model from a harness it would otherwise
+    # reach, as a model fine-tuned on one harness's turns is withheld from the
+    # others.
+    harnesses: Mapped[Optional[str]] = mapped_column(Unicode(128), nullable=True)
     api_version: Mapped[Optional[str]] = mapped_column(Unicode(64), nullable=True)
     # How the resolved secret is sent upstream: 'api_key_header' (Azure/Foundry
     # `api-key:`), 'bearer' (`Authorization: Bearer`, real OpenAI / Foundry's
@@ -181,6 +239,19 @@ class Model(Base):
     )
 
     credential: Mapped[Optional[Credential]] = relationship("Credential")
+    provider: Mapped[Optional[Provider]] = relationship("Provider")
+
+    def visible_to(self, harness: str) -> bool:
+        """Whether `harness` may see and resolve this model.
+
+        An unset list means every harness; the column exists to withhold, not
+        to grant.
+        """
+        if not self.harnesses:
+            return True
+        allowed = {part.strip().lower() for part in self.harnesses.split(",")}
+        allowed.discard("")
+        return not allowed or harness.strip().lower() in allowed
 
 
 class UsageLog(Base):

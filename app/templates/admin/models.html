@@ -2,11 +2,13 @@
 {% block title %}Models — Admin{% endblock %}
 {% block content %}
 <h1>Models</h1>
-<p>Each deployment is self-contained: target URI, credential, and optional api-version.
-   The path of the target URI determines which proxy route can use it
-   (<code>/anthropic/v1/messages</code> → <code>/v1/messages</code>;
-   <code>/openai/responses</code> → <code>/v1/responses</code> + <code>/v1/chat/completions</code>;
-   <code>/chat/completions</code> → <code>/v1/chat/completions</code>).</p>
+<p>A deployment names a model and points at the <a href="/admin/providers">provider</a>
+   hosting it; the provider supplies the host, the credential and one path per
+   request shape, so a model reachable in more than one shape is offered to
+   every harness that speaks one. Restrict a model to particular harnesses only
+   to withhold it from one it would otherwise reach. A deployment with no
+   provider falls back to its own full target URI and serves the single shape
+   that path implies.</p>
 
 <div id="add-section">
   {% include "admin/_models_add_button.html" %}

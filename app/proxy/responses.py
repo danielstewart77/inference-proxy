@@ -54,7 +54,9 @@ async def responses_passthrough(
         raise HTTPException(status_code=400, detail="Invalid JSON in request body")
 
     model = body.get("model")
-    target = await resolve_deployment(session, model, is_admin=is_admin)
+    target = await resolve_deployment(
+        session, model, is_admin=is_admin, wire="openai_responses"
+    )
     reject_wrong_protocol(target, expected="openai_responses")
 
     is_streaming = body.get("stream", False)

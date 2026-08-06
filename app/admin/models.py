@@ -13,7 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth import require_html_admin
 from app.db import get_session
-from app.orm import Credential, Model
+from app.orm import Credential, Model, Provider
 from app.templating import templates
 
 router = APIRouter()
@@ -126,6 +126,59 @@ async def _resolve_credential_id(session: AsyncSession, raw: Optional[str]) -> O
     return credential_id
 
 
+async def _provider_choices(session: AsyncSession) -> list[Provider]:
+    """Upstreams offered in the model form's `provider_id` select."""
+    return list(
+        (await session.execute(select(Provider).order_by(Provider.name))).scalars().all()
+    )
+
+
+async def _resolve_provider_id(session: AsyncSession, raw: Optional[str]) -> Optional[int]:
+    val = (raw or "").strip()
+    if not val:
+        return None
+    try:
+        provider_id = int(val)
+    except ValueError:
+        raise HTTPException(status_code=400, detail=f"Invalid provider_id: {val!r}")
+    exists = (
+        await session.execute(select(Provider.id).where(Provider.id == provider_id))
+    ).scalar_one_or_none()
+    if exists is None:
+        raise HTTPException(status_code=404, detail="Provider not found")
+    return provider_id
+
+
+def _parse_harnesses(raw: Optional[str]) -> Optional[str]:
+    """Normalize the harness withholding list.
+
+    Blank is the default and means every harness the provider can serve. The
+    column exists to withhold a model from a harness that would otherwise
+    reach it, so an empty value must round-trip to null rather than to a list
+    matching nobody.
+    """
+    parts = [part.strip().lower() for part in (raw or "").split(",")]
+    parts = [part for part in parts if part]
+    unknown = [part for part in parts if part not in ("claude", "codex")]
+    if unknown:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unknown harness(es): {', '.join(unknown)}. Use claude and/or codex.",
+        )
+    return ",".join(sorted(set(parts))) or None
+
+
+def _upstream_required(target_uri: Optional[str], provider_id: Optional[int]) -> str:
+    """A model needs somewhere to go: a provider, or its own full URI."""
+    uri = (target_uri or "").strip()
+    if not uri and provider_id is None:
+        raise HTTPException(
+            status_code=400,
+            detail="Choose a provider, or give this model its own target URI",
+        )
+    return uri
+
+
 def _parse_decimal(raw: Optional[str]) -> Optional[Decimal]:
     if raw is None or raw.strip() == "":
         return None
@@ -171,7 +224,10 @@ async def add_form_fragment(
     return templates.TemplateResponse(
         request,
         "admin/_models_add_form.html",
-        {"credentials": await _credential_choices(session)},
+        {
+            "credentials": await _credential_choices(session),
+            "providers": await _provider_choices(session),
+        },
     )
 
 
@@ -205,7 +261,11 @@ async def edit_form_fragment(
     return templates.TemplateResponse(
         request,
         "admin/_models_edit_form.html",
-        {"m": target, "credentials": await _credential_choices(session)},
+        {
+            "m": target,
+            "credentials": await _credential_choices(session),
+            "providers": await _provider_choices(session),
+        },
     )
 
 
@@ -213,7 +273,9 @@ async def edit_form_fragment(
 async def add_model(
     request: Request,
     deployment_name: str = Form(...),
-    target_uri: str = Form(...),
+    target_uri: str = Form(""),
+    provider_id: str = Form(""),
+    harnesses: str = Form(""),
     credential_id: str = Form(""),
     api_version: str = Form(""),
     auth_scheme: str = Form("bearer"),
@@ -229,7 +291,11 @@ async def add_model(
 ):
     await require_html_admin(request)
     name = _required_str(deployment_name, "deployment_name", max_len=128)
-    raw_uri = _required_str(target_uri, "target_uri", max_len=512)
+    prov_id = await _resolve_provider_id(session, provider_id)
+    raw_uri = _upstream_required(target_uri, prov_id)
+    if len(raw_uri) > 512:
+        raise HTTPException(status_code=400, detail="target_uri must be 512 characters or fewer")
+    harness_list = _parse_harnesses(harnesses)
     cred_id = await _resolve_credential_id(session, credential_id)
     scheme = _validate_auth_scheme(auth_scheme)
     cleaned_uri, final_api_version = _reconcile_api_version(
@@ -252,7 +318,9 @@ async def add_model(
             deployment_name=name,
             label=_optional_str(label, max_len=128),
             description=_optional_str(description, max_len=4000),
-            target_uri=cleaned_uri,
+            target_uri=cleaned_uri or None,
+            provider_id=prov_id,
+            harnesses=harness_list,
             credential_id=cred_id,
             api_version=final_api_version,
             auth_scheme=scheme,
@@ -272,7 +340,9 @@ async def add_model(
 async def update_model(
     model_id: int,
     request: Request,
-    target_uri: str = Form(...),
+    target_uri: str = Form(""),
+    provider_id: str = Form(""),
+    harnesses: str = Form(""),
     credential_id: str = Form(""),
     api_version: str = Form(""),
     auth_scheme: str = Form("bearer"),
@@ -293,13 +363,16 @@ async def update_model(
     if target is None:
         raise HTTPException(status_code=404, detail="Model not found")
 
-    raw_uri = _required_str(target_uri, "target_uri", max_len=512)
+    prov_id = await _resolve_provider_id(session, provider_id)
+    raw_uri = _upstream_required(target_uri, prov_id)
+    if len(raw_uri) > 512:
+        raise HTTPException(status_code=400, detail="target_uri must be 512 characters or fewer")
     cleaned_uri, final_api_version = _reconcile_api_version(
         raw_uri, _optional_str(api_version, max_len=64)
     )
-    if len(cleaned_uri) > 512:
-        raise HTTPException(status_code=400, detail="target_uri must be 512 characters or fewer")
-    target.target_uri = cleaned_uri
+    target.target_uri = cleaned_uri or None
+    target.provider_id = prov_id
+    target.harnesses = _parse_harnesses(harnesses)
     target.credential_id = await _resolve_credential_id(session, credential_id)
     target.api_version = final_api_version
     target.auth_scheme = _validate_auth_scheme(auth_scheme)
