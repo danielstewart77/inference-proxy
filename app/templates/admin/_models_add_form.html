@@ -10,8 +10,17 @@
         <input type="text" id="lbl" name="label">
       </div>
     </div>
-    <label for="uri">Target URI (full URL — paste from Azure/Anthropic/OpenAI docs verbatim is fine)</label>
-    <input type="text" id="uri" name="target_uri" required
+    <label for="prov">Provider (the upstream hosting this model)</label>
+    <select id="prov" name="provider_id">
+      <option value="">— none: give a target URI below —</option>
+      {% for p in providers %}
+      <option value="{{ p.id }}">{{ p.label or p.name }}</option>
+      {% endfor %}
+    </select>
+    <label for="harn">Restrict to harnesses (blank means every harness the provider serves)</label>
+    <input type="text" id="harn" name="harnesses" placeholder="claude, codex">
+    <label for="uri">Target URI (only when no provider is chosen)</label>
+    <input type="text" id="uri" name="target_uri"
            placeholder="https://...services.ai.azure.com/anthropic/v1/messages">
     <label for="as">Auth scheme (how the secret is sent upstream)</label>
     <select id="as" name="auth_scheme">

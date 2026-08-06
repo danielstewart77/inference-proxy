@@ -78,7 +78,9 @@ async def responses_websocket(websocket: WebSocket):
 
         try:
             async with SessionLocal() as session:
-                target = await resolve_deployment(session, model, is_admin=is_admin)
+                target = await resolve_deployment(
+                    session, model, is_admin=is_admin, wire="openai_responses"
+                )
                 reject_wrong_protocol(target, expected="openai_responses")
         except Exception as e:
             msg = getattr(e, "detail", str(e))

@@ -247,7 +247,9 @@ async def _handle_completions(
         raise HTTPException(status_code=400, detail="Invalid JSON in request body")
 
     model = deployment_override or body.get("model")
-    target = await resolve_deployment(session, model, is_admin=is_admin)
+    target = await resolve_deployment(
+        session, model, is_admin=is_admin, wire="chat_completions"
+    )
     reject_wrong_protocol(target, expected="chat_completions_any")
 
     is_streaming = body.get("stream", False) and config.enable_streaming

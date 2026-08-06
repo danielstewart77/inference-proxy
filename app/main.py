@@ -11,6 +11,7 @@ from fastapi import Depends, FastAPI, Header, HTTPException, Request, WebSocket
 from fastapi.responses import JSONResponse, RedirectResponse, Response
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.middleware.sessions import SessionMiddleware
 
@@ -18,6 +19,7 @@ from app.admin import clients as admin_clients
 from app.admin import credentials as admin_credentials
 from app.admin import login as admin_login
 from app.admin import models as admin_models
+from app.admin import providers as admin_providers
 from app.admin import usage as admin_usage
 from app.auth import (
     is_admin_session,
@@ -28,6 +30,7 @@ from app.auth import (
 )
 from app.config import config
 from app.db import SessionLocal, get_session
+from app.deployments import listing_for
 from app.orm import Model
 from app.proxy import anthropic, chat_completions, compact, responses
 from app.proxy import websocket as ws_router
@@ -136,27 +139,9 @@ def create_app() -> FastAPI:
         x_api_key: str | None = Header(None, alias="x-api-key"),
         session: AsyncSession = Depends(get_session),
     ):
-        """OpenAI-style listing — Anthropic Messages deployments excluded."""
+        """What a Codex harness may address."""
         is_admin = _require_listing_role(authorization, api_key, x_api_key)
-        now = int(time.time())
-        stmt = (
-            select(Model.deployment_name)
-            .where(Model.enabled.is_(True))
-            .where(Model.target_uri.is_not(None))
-            .where(~Model.target_uri.contains("/anthropic/"))
-            .where(~Model.target_uri.contains("api.anthropic.com"))
-            .order_by(Model.deployment_name)
-        )
-        if not is_admin:
-            stmt = stmt.where(Model.admin_only.is_(False))
-        rows = await session.execute(stmt)
-        return {
-            "object": "list",
-            "data": [
-                {"id": name, "object": "model", "created": now, "owned_by": "proxy"}
-                for (name,) in rows.all()
-            ],
-        }
+        return await listing_for(session, wire="openai_responses", is_admin=is_admin)
 
     @app.get("/v1/anthropic/models")
     async def list_anthropic_models(
@@ -165,36 +150,9 @@ def create_app() -> FastAPI:
         x_api_key: str | None = Header(None, alias="x-api-key"),
         session: AsyncSession = Depends(get_session),
     ):
-        """Anthropic-Messages-compatible deployments only."""
+        """What a Claude harness may address."""
         is_admin = _require_listing_role(authorization, api_key, x_api_key)
-        now = int(time.time())
-        stmt = (
-            select(Model.deployment_name, Model.label, Model.description)
-            .where(Model.enabled.is_(True))
-            .where(Model.target_uri.is_not(None))
-            .where(
-                Model.target_uri.contains("/anthropic/")
-                | Model.target_uri.contains("api.anthropic.com")
-            )
-            .order_by(Model.deployment_name)
-        )
-        if not is_admin:
-            stmt = stmt.where(Model.admin_only.is_(False))
-        rows = await session.execute(stmt)
-        return {
-            "object": "list",
-            "data": [
-                {
-                    "id": name,
-                    "object": "model",
-                    "created": now,
-                    "owned_by": "anthropic",
-                    "label": label,
-                    "description": description,
-                }
-                for (name, label, description) in rows.all()
-            ],
-        }
+        return await listing_for(session, wire="anthropic_messages", is_admin=is_admin)
 
     # ---- Proxy routers (auth via proxy API key, no session) -----------------
     app.include_router(chat_completions.router)
@@ -208,6 +166,7 @@ def create_app() -> FastAPI:
     app.include_router(admin_clients.router)
     app.include_router(admin_credentials.router)
     app.include_router(admin_models.router)
+    app.include_router(admin_providers.router)
     app.include_router(admin_usage.router)
 
     # ---- Public status page (anonymous, no session) -------------------------

@@ -1,0 +1,129 @@
+{% extends "_base.html" %}
+{% block title %}Providers — Admin{% endblock %}
+{% block content %}
+<h1>Providers</h1>
+<p>A provider is an upstream: a host, a credential, and one path per request
+   shape it serves. Models attach to a provider and carry only their own name
+   and pricing, so a locally-hosted model reachable at both
+   <code>/v1/messages</code> and <code>/v1/responses</code> is offered to a
+   Claude harness and a Codex harness from one row. Leave a path blank when
+   the upstream does not speak that shape — Anthropic serves Messages only.</p>
+
+<h2>Add provider</h2>
+<div class="card" style="max-width: 720px;">
+  <form method="post" action="/admin/providers">
+    <div class="form-row">
+      <div>
+        <label for="new-name">Name</label>
+        <input type="text" id="new-name" name="name" required placeholder="e.g. ollama">
+      </div>
+      <div>
+        <label for="new-label">Label (display name, optional)</label>
+        <input type="text" id="new-label" name="label" placeholder="Ollama">
+      </div>
+    </div>
+    <label for="new-base">Base URL (scheme and host, no trailing slash)</label>
+    <input type="text" id="new-base" name="base_url" required
+           placeholder="http://192.168.4.64:11434">
+    <div class="form-row">
+      <div>
+        <label for="new-messages">Messages path</label>
+        <input type="text" id="new-messages" name="messages_path" placeholder="/v1/messages">
+      </div>
+      <div>
+        <label for="new-responses">Responses path</label>
+        <input type="text" id="new-responses" name="responses_path" placeholder="/v1/responses">
+      </div>
+    </div>
+    <label for="new-chat">Chat-completions path</label>
+    <input type="text" id="new-chat" name="chat_completions_path" placeholder="/v1/chat/completions">
+    <label for="new-auth">Auth scheme</label>
+    <select id="new-auth" name="auth_scheme">
+      <option value="api_key_header">api-key header (Azure / Foundry)</option>
+      <option value="bearer" selected>Authorization: Bearer</option>{# secret-guard: allow — the name of an auth scheme, not a token #}
+      <option value="x_api_key">x-api-key header (real Anthropic)</option>
+    </select>
+    <label for="new-cred">Credential</label>
+    <select id="new-cred" name="credential_id">
+      <option value="">— none —</option>
+      {% for c in credentials %}
+      <option value="{{ c.id }}">{{ c.name }} ({{ c.kind }})</option>
+      {% endfor %}
+    </select>
+    <label for="new-av">API version (optional)</label>
+    <input type="text" id="new-av" name="api_version" placeholder="2025-04-01-preview">
+    <div class="form-footer">
+      <label class="checkbox-label">
+        <input type="checkbox" name="enabled" checked> Enabled
+      </label>
+      <div class="actions equal-width">
+        <button type="submit">Save</button>
+      </div>
+    </div>
+  </form>
+</div>
+
+<h2>All providers</h2>
+{% for p in providers %}
+<div class="card">
+  <form method="post" action="/admin/providers/{{ p.id }}">
+    <p style="margin: 0 0 12px 0;">
+      <strong>{{ p.name }}</strong>
+      <span style="color: var(--muted);">· id {{ p.id }} ·
+        {{ counts.get(p.id, 0) }} model(s)</span>
+    </p>
+    <div class="form-row">
+      <div>
+        <label for="label-{{ p.id }}">Label</label>
+        <input type="text" id="label-{{ p.id }}" name="label" value="{{ p.label or '' }}">
+      </div>
+      <div>
+        <label for="base-{{ p.id }}">Base URL</label>
+        <input type="text" id="base-{{ p.id }}" name="base_url" value="{{ p.base_url }}" required>
+      </div>
+    </div>
+    <div class="form-row">
+      <div>
+        <label for="msg-{{ p.id }}">Messages path</label>
+        <input type="text" id="msg-{{ p.id }}" name="messages_path" value="{{ p.messages_path or '' }}">
+      </div>
+      <div>
+        <label for="res-{{ p.id }}">Responses path</label>
+        <input type="text" id="res-{{ p.id }}" name="responses_path" value="{{ p.responses_path or '' }}">
+      </div>
+    </div>
+    <label for="chat-{{ p.id }}">Chat-completions path</label>
+    <input type="text" id="chat-{{ p.id }}" name="chat_completions_path" value="{{ p.chat_completions_path or '' }}">
+    <label for="auth-{{ p.id }}">Auth scheme</label>
+    <select id="auth-{{ p.id }}" name="auth_scheme">
+      {% for scheme in ('api_key_header', 'bearer', 'x_api_key') %}
+      <option value="{{ scheme }}" {% if p.auth_scheme == scheme %}selected{% endif %}>{{ scheme }}</option>
+      {% endfor %}
+    </select>
+    <label for="cred-{{ p.id }}">Credential</label>
+    <select id="cred-{{ p.id }}" name="credential_id">
+      <option value="">— none —</option>
+      {% for c in credentials %}
+      <option value="{{ c.id }}" {% if p.credential_id == c.id %}selected{% endif %}>{{ c.name }} ({{ c.kind }})</option>
+      {% endfor %}
+    </select>
+    <label for="av-{{ p.id }}">API version</label>
+    <input type="text" id="av-{{ p.id }}" name="api_version" value="{{ p.api_version or '' }}">
+    <div class="form-footer">
+      <label class="checkbox-label">
+        <input type="checkbox" name="enabled" {% if p.enabled %}checked{% endif %}> Enabled
+      </label>
+      <div class="actions equal-width">
+        <button type="submit">Save</button>
+      </div>
+    </div>
+  </form>
+  <form method="post" action="/admin/providers/{{ p.id }}/delete"
+        onsubmit="return confirm('Delete provider {{ p.name }}?');">
+    <div class="actions"><button type="submit" class="danger">Delete</button></div>
+  </form>
+</div>
+{% else %}
+<p style="color: var(--muted);">No providers yet.</p>
+{% endfor %}
+{% endblock %}

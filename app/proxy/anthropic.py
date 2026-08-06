@@ -185,7 +185,11 @@ async def _resolve_anthropic_deployment(
     try:
         return (
             await resolve_deployment(
-                session, requested_model, error_kind="anthropic", is_admin=is_admin
+                session,
+                requested_model,
+                error_kind="anthropic",
+                is_admin=is_admin,
+                wire="anthropic_messages",
             ),
             False,
         )
@@ -208,7 +212,11 @@ async def _resolve_anthropic_deployment(
             raise
 
         target = await resolve_deployment(
-            session, base_model, error_kind="anthropic", is_admin=is_admin
+            session,
+            base_model,
+            error_kind="anthropic",
+            is_admin=is_admin,
+            wire="anthropic_messages",
         )
         log(f"[Anthropic API] Normalized model alias {requested_model!r} -> {target.name!r}")
         return target, dated_base is not None

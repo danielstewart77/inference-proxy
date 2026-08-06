@@ -82,7 +82,9 @@ async def responses_compact(
     log(f"{'='*60}")
 
     compact_model = body.get("model")
-    target = await resolve_deployment(session, compact_model, is_admin=is_admin)
+    target = await resolve_deployment(
+        session, compact_model, is_admin=is_admin, wire="openai_responses"
+    )
     reject_wrong_protocol(target, expected="openai_responses")
 
     azure_body = {

@@ -9,8 +9,17 @@
   <form id="edit-form-{{ m.id }}" method="post" action="/admin/models/{{ m.id }}">
     <label>Label</label>
     <input type="text" name="label" value="{{ m.label or '' }}">
-    <label>Target URI</label>
-    <input type="text" name="target_uri" value="{{ m.target_uri or '' }}" required>
+    <label>Provider (the upstream hosting this model)</label>
+    <select name="provider_id">
+      <option value="">— none: target URI below —</option>
+      {% for p in providers %}
+      <option value="{{ p.id }}" {% if m.provider_id == p.id %}selected{% endif %}>{{ p.label or p.name }}</option>
+      {% endfor %}
+    </select>
+    <label>Restrict to harnesses (blank means every harness the provider serves)</label>
+    <input type="text" name="harnesses" value="{{ m.harnesses or '' }}" placeholder="claude, codex">
+    <label>Target URI (only when no provider is chosen)</label>
+    <input type="text" name="target_uri" value="{{ m.target_uri or '' }}">
     <label>Auth scheme (how the secret is sent upstream)</label>
     <select name="auth_scheme">
       <option value="api_key_header" {% if m.auth_scheme == 'api_key_header' %}selected{% endif %}>api-key header (Azure / Foundry)</option>

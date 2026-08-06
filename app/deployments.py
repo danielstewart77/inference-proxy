@@ -20,6 +20,7 @@ The path (or host) of `target_uri` determines the upstream protocol:
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass
 from typing import Optional
 
@@ -29,7 +30,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.credentials import CredentialError, codex_account_id, resolve_secret
-from app.orm import Model
+from app.orm import Model, Provider
 
 REAL_ANTHROPIC_HOST = "api.anthropic.com"
 REAL_OPENAI_HOST = "api.openai.com"
@@ -144,12 +145,75 @@ def _raise(error_kind: str, status: int, message: str) -> None:
     raise HTTPException(status_code=status, detail=message)
 
 
+#: Which harness speaks each request shape. The endpoint a request arrives on
+#: is therefore enough to know who is asking — no caller has to declare it.
+HARNESS_FOR_WIRE = {
+    "anthropic_messages": "claude",
+    "openai_responses": "codex",
+    "chat_completions": "codex",
+}
+
+
+def uri_serves(target_uri: Optional[str], wire: str) -> bool:
+    """Whether a stored URI answers requests of shape `wire`.
+
+    Only needed for a model registered before providers existed, whose single
+    baked-in path is the only shape it can serve.
+    """
+    if not target_uri:
+        return False
+    probe = DeploymentTarget(name="", target_uri=target_uri, api_key="", api_version=None)
+    if wire == "anthropic_messages":
+        return probe.is_anthropic_messages
+    if wire == "openai_responses":
+        return probe.is_openai_responses
+    if wire == "chat_completions":
+        return probe.is_openai_responses or probe.is_native_chat_completions
+    return False
+
+
+def resolve_target_uri(row: Model, wire: Optional[str]) -> Optional[str]:
+    """Where a request in shape `wire` for this model should be sent.
+
+    A model attached to a provider has no path of its own: the provider holds
+    the host and one path per shape it serves, and the shape is whichever
+    endpoint the request came in on. That is what lets one locally-hosted model
+    answer a Claude harness and a Codex harness both. A model with no provider
+    falls back to its own stored URI, which is the pre-provider arrangement and
+    serves exactly one shape.
+    """
+    provider = row.provider
+    if provider is None or not provider.enabled:
+        return row.target_uri
+
+    path = provider.path_for(wire) if wire else None
+    if path is None and wire is not None:
+        # `chat_completions` is the one shape with a stand-in: the Responses
+        # API answers it after translation, which is what the chat route
+        # already does for the Codex backend.
+        if wire == "chat_completions":
+            path = provider.responses_path
+        if path is None:
+            return None
+    if path is None:
+        # No shape asked for (a legacy caller): first path the provider serves.
+        path = (
+            provider.messages_path
+            or provider.responses_path
+            or provider.chat_completions_path
+        )
+    if path is None:
+        return None
+    return f"{provider.base_url.rstrip('/')}/{path.lstrip('/')}"
+
+
 async def resolve_deployment(
     session: AsyncSession,
     name: Optional[str],
     *,
     error_kind: str = "openai",
     is_admin: bool = False,
+    wire: Optional[str] = None,
 ) -> DeploymentTarget:
     """Look up a deployment by name; return a fully-populated target.
 
@@ -167,7 +231,10 @@ async def resolve_deployment(
     row = (
         await session.execute(
             select(Model)
-            .options(selectinload(Model.credential))
+            .options(
+                selectinload(Model.credential),
+                selectinload(Model.provider).selectinload(Provider.credential),
+            )
             .where(
                 Model.deployment_name == name,
                 Model.enabled.is_(True),
@@ -179,20 +246,82 @@ async def resolve_deployment(
     if row.admin_only and not is_admin:
         # Same shape/status as "not registered" — don't reveal it exists.
         _raise(error_kind, 404, f"Model {name!r} is not registered")
-    if not row.target_uri:
+    harness = HARNESS_FOR_WIRE.get(wire or "")
+    if harness and not row.visible_to(harness):
+        # Withheld from this harness — reported exactly as absent, for the
+        # same reason an admin-only row is: a refusal that differs from a
+        # miss is an enumeration oracle.
+        _raise(error_kind, 404, f"Model {name!r} is not registered")
+    target_uri = resolve_target_uri(row, wire)
+    if not target_uri:
         _raise(error_kind, 503, f"Model {name!r} has no upstream URI configured")
+    provider = row.provider if row.provider is not None and row.provider.enabled else None
+    credential = (
+        row.credential
+        if row.credential is not None or provider is None
+        else provider.credential
+    )
     try:
-        secret = await resolve_secret(session, row.credential)
+        secret = await resolve_secret(session, credential)
     except CredentialError as exc:
         _raise(error_kind, 503, f"Model {name!r} credential unavailable: {exc}")
     return DeploymentTarget(
         name=row.deployment_name,
-        target_uri=row.target_uri,
+        target_uri=target_uri,
         api_key=secret,
-        api_version=row.api_version,
+        api_version=row.api_version or (provider.api_version if provider else None),
         auth_scheme=row.auth_scheme,
-        credential_kind=row.credential.kind if row.credential else "static",
+        credential_kind=credential.kind if credential else "static",
     )
+
+
+async def listing_for(
+    session: AsyncSession, *, wire: str, is_admin: bool
+) -> dict:
+    """Every model a harness speaking `wire` may address, with its provider.
+
+    The endpoint a listing is asked on identifies the harness — a Claude CLI
+    speaks Anthropic Messages, a Codex CLI the Responses shape — so no caller
+    has to declare who it is. A model is listed when its provider serves that
+    shape and its own harness list does not withhold it, which is what lets a
+    locally-hosted model appear to both harnesses without being registered
+    twice.
+    """
+    harness = HARNESS_FOR_WIRE[wire]
+    now = int(time.time())
+    stmt = (
+        select(Model)
+        .options(selectinload(Model.provider))
+        .where(Model.enabled.is_(True))
+        .order_by(Model.deployment_name)
+    )
+    if not is_admin:
+        stmt = stmt.where(Model.admin_only.is_(False))
+    data = []
+    for row in (await session.execute(stmt)).scalars().all():
+        if not row.visible_to(harness):
+            continue
+        uri = resolve_target_uri(row, wire)
+        if not uri:
+            continue
+        provider = row.provider
+        if provider is None and not uri_serves(uri, wire):
+            # Registered before providers existed: its one baked-in path is the
+            # only shape it answers.
+            continue
+        data.append(
+            {
+                "id": row.deployment_name,
+                "object": "model",
+                "created": now,
+                "owned_by": provider.name if provider else "proxy",
+                "provider": provider.name if provider else None,
+                "provider_label": (provider.label or provider.name) if provider else None,
+                "label": row.label,
+                "description": row.description,
+            }
+        )
+    return {"object": "list", "data": data}
 
 
 def reject_wrong_protocol(
