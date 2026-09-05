@@ -153,6 +153,39 @@ HARNESS_FOR_WIRE = {
     "chat_completions": "codex",
 }
 
+#: Every request shape the proxy knows, in listing order.
+ALL_WIRES = ("anthropic_messages", "openai_responses", "chat_completions")
+
+#: Which shapes each harness can actually send. A listing is filtered to the
+#: caller's own shapes so a picker never offers a model the caller cannot
+#: address. Hermes speaks all three — it carries a transport per wire and
+#: chooses per model — which is why one merged listing exists rather than one
+#: endpoint per shape.
+HARNESS_WIRES = {
+    "claude": ("anthropic_messages",),
+    "codex": ("openai_responses", "chat_completions"),
+    "hermes": ALL_WIRES,
+}
+
+
+def wires_for(row: Model) -> list[str]:
+    """Every request shape this model can actually be reached on.
+
+    Reported in full regardless of who is asking: a caller that speaks one
+    shape still benefits from knowing the model answers others, and a row
+    that named only the asker's shape would make the same model look
+    different to two callers.
+    """
+    served = []
+    for wire in ALL_WIRES:
+        uri = resolve_target_uri(row, wire)
+        if not uri:
+            continue
+        if row.provider is None and not uri_serves(uri, wire):
+            continue
+        served.append(wire)
+    return served
+
 
 def uri_serves(target_uri: Optional[str], wire: str) -> bool:
     """Whether a stored URI answers requests of shape `wire`.
@@ -284,18 +317,24 @@ async def resolve_deployment(
 
 
 async def listing_for(
-    session: AsyncSession, *, wire: str, is_admin: bool
+    session: AsyncSession, *, harness: Optional[str] = None, is_admin: bool
 ) -> dict:
-    """Every model a harness speaking `wire` may address, with its provider.
+    """Every model `harness` may address, each naming the shapes it speaks.
 
-    The endpoint a listing is asked on identifies the harness — a Claude CLI
-    speaks Anthropic Messages, a Codex CLI the Responses shape — so no caller
-    has to declare who it is. A model is listed when its provider serves that
-    shape and its own harness list does not withhold it, which is what lets a
-    locally-hosted model appear to both harnesses without being registered
-    twice.
+    One listing serves every harness. The caller names itself rather than
+    being inferred from the endpoint it asked on, because Hermes speaks all
+    three shapes and so no endpoint could identify it — and a second listing
+    route per harness is how a model ends up offered to one caller and
+    invisible to another for no reason anybody can see.
+
+    `harness=None` is the unfiltered union: every enabled model this key can
+    reach. It applies no `harnesses` withholding, because withholding answers
+    the question "may *this* harness see it", and a caller that did not say
+    who it is has not asked that question.
     """
-    harness = HARNESS_FOR_WIRE[wire]
+    if harness is not None and harness not in HARNESS_WIRES:
+        _raise("openai", 400, f"Unknown harness {harness!r}")
+    wanted = set(HARNESS_WIRES[harness]) if harness else set(ALL_WIRES)
     now = int(time.time())
     stmt = (
         select(Model)
@@ -307,16 +346,12 @@ async def listing_for(
         stmt = stmt.where(Model.admin_only.is_(False))
     data = []
     for row in (await session.execute(stmt)).scalars().all():
-        if not row.visible_to(harness):
+        if harness and not row.visible_to(harness):
             continue
-        uri = resolve_target_uri(row, wire)
-        if not uri:
+        wires = wires_for(row)
+        if not wires or not (set(wires) & wanted):
             continue
         provider = row.provider
-        if provider is None and not uri_serves(uri, wire):
-            # Registered before providers existed: its one baked-in path is the
-            # only shape it answers.
-            continue
         data.append(
             {
                 "id": row.deployment_name,
@@ -327,6 +362,7 @@ async def listing_for(
                 "provider_label": (provider.label or provider.name) if provider else None,
                 "label": row.label,
                 "description": row.description,
+                "wires": wires,
             }
         )
     return {"object": "list", "data": data}

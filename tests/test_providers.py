@@ -80,8 +80,8 @@ async def test_a_model_is_withheld_only_from_the_harness_named_out(session):
     )
     await session.commit()
 
-    claude = _names(await listing_for(session, wire="anthropic_messages", is_admin=False))
-    codex = _names(await listing_for(session, wire="openai_responses", is_admin=False))
+    claude = _names(await listing_for(session, harness="claude", is_admin=False))
+    codex = _names(await listing_for(session, harness="codex", is_admin=False))
 
     assert claude == ["qwen35-131k", "skippy-harness"]
     assert codex == ["qwen35-131k"]
@@ -106,7 +106,7 @@ async def test_a_new_provider_and_model_are_offered_with_no_code_change(session)
     session.add(Model(deployment_name="mistral-large", provider_id=mistral.id))
     await session.commit()
 
-    listed = (await listing_for(session, wire="openai_responses", is_admin=False))["data"]
+    listed = (await listing_for(session, harness="codex", is_admin=False))["data"]
     row = next(item for item in listed if item["id"] == "mistral-large")
     assert row["provider"] == "mistral"
     assert row["provider_label"] == "Mistral"
@@ -118,10 +118,10 @@ async def test_a_provider_that_cannot_speak_a_shape_hides_its_models(session):
     session.add(Model(deployment_name="claude-opus-5", provider_id=provider.id))
     await session.commit()
 
-    assert _names(await listing_for(session, wire="anthropic_messages", is_admin=False)) == [
+    assert _names(await listing_for(session, harness="claude", is_admin=False)) == [
         "claude-opus-5"
     ]
-    assert _names(await listing_for(session, wire="openai_responses", is_admin=False)) == []
+    assert _names(await listing_for(session, harness="codex", is_admin=False)) == []
 
 
 async def test_the_listing_reports_the_label_a_picker_shows(session):
@@ -132,7 +132,7 @@ async def test_the_listing_reports_the_label_a_picker_shows(session):
     )
     await session.commit()
 
-    row = (await listing_for(session, wire="anthropic_messages", is_admin=False))["data"][0]
+    row = (await listing_for(session, harness="claude", is_admin=False))["data"][0]
     assert (row["id"], row["label"]) == ("claude-opus-5", "Opus 5")
 
 
@@ -157,9 +157,134 @@ async def test_disabling_a_provider_takes_its_models_with_it(session):
     provider.enabled = False
     await session.commit()
 
-    assert _names(await listing_for(session, wire="anthropic_messages", is_admin=False)) == []
-    assert _names(await listing_for(session, wire="openai_responses", is_admin=False)) == []
+    assert _names(await listing_for(session, harness="claude", is_admin=False)) == []
+    assert _names(await listing_for(session, harness="codex", is_admin=False)) == []
 
     with pytest.raises(Exception) as refused:
         await resolve_deployment(session, "qwen35-131k", wire="anthropic_messages")
     assert refused.value.status_code == 503
+
+
+# ---------------------------------------------------------------------------
+# One merged listing (story 02)
+# ---------------------------------------------------------------------------
+
+
+async def test_one_listing_returns_every_kind_of_upstream_together(session):
+    """Requirement 1 — Anthropic, OpenAI and Ollama models in one response."""
+    ollama = await _ollama(session)
+    anthropic = await _anthropic(session)
+    openai = Provider(
+        name="openai",
+        label="OpenAI",
+        base_url="https://chatgpt.example",
+        responses_path="/backend-api/codex/responses",
+    )
+    session.add(openai)
+    await session.flush()
+    session.add(Model(deployment_name="claude-opus-5", provider_id=anthropic.id))
+    session.add(Model(deployment_name="gpt-5.6", provider_id=openai.id))
+    session.add(Model(deployment_name="qwen35-131k", provider_id=ollama.id))
+    await session.commit()
+
+    assert _names(await listing_for(session, is_admin=False)) == [
+        "claude-opus-5",
+        "gpt-5.6",
+        "qwen35-131k",
+    ]
+
+
+async def test_each_model_names_the_shapes_it_can_be_reached_on(session):
+    """Requirement 2 — the row carries its wires, so a caller can route on it."""
+    ollama = await _ollama(session)
+    anthropic = await _anthropic(session)
+    session.add(Model(deployment_name="qwen35-131k", provider_id=ollama.id))
+    session.add(Model(deployment_name="claude-opus-5", provider_id=anthropic.id))
+    await session.commit()
+
+    rows = {r["id"]: r["wires"] for r in (await listing_for(session, is_admin=False))["data"]}
+
+    assert rows["qwen35-131k"] == [
+        "anthropic_messages",
+        "openai_responses",
+        "chat_completions",
+    ]
+    assert rows["claude-opus-5"] == ["anthropic_messages"]
+
+
+async def test_a_claude_caller_is_not_offered_a_responses_only_model(session):
+    """Requirement 4a — a picker never shows what its harness cannot send."""
+    openai = Provider(
+        name="openai",
+        label="OpenAI",
+        base_url="https://chatgpt.example",
+        responses_path="/backend-api/codex/responses",
+    )
+    session.add(openai)
+    await session.flush()
+    session.add(Model(deployment_name="gpt-5.6", provider_id=openai.id))
+    await session.commit()
+
+    assert _names(await listing_for(session, harness="claude", is_admin=False)) == []
+    assert _names(await listing_for(session, harness="codex", is_admin=False)) == ["gpt-5.6"]
+
+
+async def test_a_codex_caller_is_not_offered_a_messages_only_model(session):
+    """Requirement 4b — the reverse direction breaks independently."""
+    anthropic = await _anthropic(session)
+    session.add(Model(deployment_name="claude-opus-5", provider_id=anthropic.id))
+    await session.commit()
+
+    assert _names(await listing_for(session, harness="codex", is_admin=False)) == []
+    assert _names(await listing_for(session, harness="claude", is_admin=False)) == [
+        "claude-opus-5"
+    ]
+
+
+async def test_a_withheld_model_is_absent_from_the_harness_named_out(session):
+    """Requirement 5a — withholding still bites on the merged listing."""
+    provider = await _ollama(session)
+    session.add(
+        Model(deployment_name="skippy-harness", provider_id=provider.id, harnesses="claude")
+    )
+    await session.commit()
+
+    assert _names(await listing_for(session, harness="codex", is_admin=False)) == []
+    assert _names(await listing_for(session, harness="hermes", is_admin=False)) == []
+
+
+async def test_a_withheld_model_is_still_offered_to_the_harness_it_names(session):
+    """Requirement 5b — withholding must not hide it from everyone."""
+    provider = await _ollama(session)
+    session.add(
+        Model(deployment_name="skippy-harness", provider_id=provider.id, harnesses="claude")
+    )
+    await session.commit()
+
+    assert _names(await listing_for(session, harness="claude", is_admin=False)) == [
+        "skippy-harness"
+    ]
+
+
+async def test_hermes_is_offered_every_shape_of_model(session):
+    """Requirement 1, from the caller that speaks all three wires."""
+    ollama = await _ollama(session)
+    anthropic = await _anthropic(session)
+    openai = Provider(
+        name="openai",
+        label="OpenAI",
+        base_url="https://chatgpt.example",
+        responses_path="/backend-api/codex/responses",
+    )
+    session.add(openai)
+    await session.flush()
+    session.add(Model(deployment_name="claude-opus-5", provider_id=anthropic.id))
+    session.add(Model(deployment_name="gpt-5.6", provider_id=openai.id))
+    session.add(Model(deployment_name="qwen35-131k", provider_id=ollama.id))
+    await session.commit()
+
+    assert _names(await listing_for(session, harness="hermes", is_admin=False)) == [
+        "claude-opus-5",
+        "gpt-5.6",
+        "qwen35-131k",
+    ]
