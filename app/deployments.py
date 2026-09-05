@@ -327,6 +327,9 @@ async def listing_for(
     route per harness is how a model ends up offered to one caller and
     invisible to another for no reason anybody can see.
 
+    Withholding is judged per wire rather than per caller name, so a model is
+    offered on exactly the shapes the request path will accept it on.
+
     `harness=None` is the unfiltered union: every enabled model this key can
     reach. It applies no `harnesses` withholding, because withholding answers
     the question "may *this* harness see it", and a caller that did not say
@@ -346,10 +349,20 @@ async def listing_for(
         stmt = stmt.where(Model.admin_only.is_(False))
     data = []
     for row in (await session.execute(stmt)).scalars().all():
-        if harness and not row.visible_to(harness):
-            continue
-        wires = wires_for(row)
-        if not wires or not (set(wires) & wanted):
+        wires = [wire for wire in wires_for(row) if wire in wanted]
+        if harness:
+            # Withholding is judged per wire, and against the harness that
+            # wire's requests will actually arrive as. `resolve_deployment`
+            # has only the shape to go on, so judging the listing by the
+            # caller's own name instead produces two disagreements: hermes
+            # can be granted nothing (the admin form accepts only claude and
+            # codex) yet reaches everything, and a model granted to a name
+            # the request path cannot see would be offered and then refused.
+            wires = [
+                wire for wire in wires
+                if row.visible_to(HARNESS_FOR_WIRE.get(wire, harness))
+            ]
+        if not wires:
             continue
         provider = row.provider
         data.append(

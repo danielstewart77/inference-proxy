@@ -250,7 +250,26 @@ async def test_a_withheld_model_is_absent_from_the_harness_named_out(session):
     await session.commit()
 
     assert _names(await listing_for(session, harness="codex", is_admin=False)) == []
-    assert _names(await listing_for(session, harness="hermes", is_admin=False)) == []
+
+
+async def test_hermes_is_offered_only_the_wires_the_grant_covers(session):
+    """Requirement 5a — a listing may not offer what the request path refuses.
+
+    Hermes speaks all three shapes and cannot be granted any of them by name:
+    the admin form takes claude and codex only. Judging its listing by its own
+    name therefore hid every withheld model from it while the request path,
+    which sees only the shape, let it through. Judged per wire, the two agree.
+    """
+    provider = await _ollama(session)
+    session.add(
+        Model(deployment_name="skippy-harness", provider_id=provider.id, harnesses="claude")
+    )
+    await session.commit()
+
+    listing = await listing_for(session, harness="hermes", is_admin=False)
+
+    assert _names(listing) == ["skippy-harness"]
+    assert listing["data"][0]["wires"] == ["anthropic_messages"]
 
 
 async def test_a_withheld_model_is_still_offered_to_the_harness_it_names(session):
