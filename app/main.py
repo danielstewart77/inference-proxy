@@ -134,25 +134,34 @@ def create_app() -> FastAPI:
 
     @app.get("/v1/models")
     async def list_models(
+        harness: str | None = None,
         authorization: str | None = Header(None, alias="Authorization"),
         api_key: str | None = Header(None, alias="api-key"),
         x_api_key: str | None = Header(None, alias="x-api-key"),
         session: AsyncSession = Depends(get_session),
     ):
-        """What a Codex harness may address."""
+        """Every model this key may address, each naming the shapes it speaks.
+
+        `harness` narrows the answer to the shapes that caller can send and
+        applies per-model withholding. Omitting it returns the union, which
+        is what a client speaking every shape wants.
+        """
         is_admin = _require_listing_role(authorization, api_key, x_api_key)
-        return await listing_for(session, wire="openai_responses", is_admin=is_admin)
+        return await listing_for(session, harness=harness, is_admin=is_admin)
 
     @app.get("/v1/anthropic/models")
-    async def list_anthropic_models(
-        authorization: str | None = Header(None, alias="Authorization"),
-        api_key: str | None = Header(None, alias="api-key"),
-        x_api_key: str | None = Header(None, alias="x-api-key"),
-        session: AsyncSession = Depends(get_session),
-    ):
-        """What a Claude harness may address."""
-        is_admin = _require_listing_role(authorization, api_key, x_api_key)
-        return await listing_for(session, wire="anthropic_messages", is_admin=is_admin)
+    async def list_anthropic_models():
+        """Retired: one listing now serves every harness.
+
+        Answered explicitly rather than left to the catch-all, which returns
+        a 200 the caller would parse as a catalog — and an empty catalog
+        renders as a mind with no models rather than as a misconfiguration
+        somebody can see and fix.
+        """
+        raise HTTPException(
+            status_code=410,
+            detail="Retired; use /v1/models?harness=claude",
+        )
 
     # ---- Proxy routers (auth via proxy API key, no session) -----------------
     app.include_router(chat_completions.router)
