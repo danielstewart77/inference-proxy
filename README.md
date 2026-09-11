@@ -128,6 +128,47 @@ and hide admin-only rows from unprivileged clients. `GET /health` is
 unauthenticated, and `/status` is a public health and throughput page carrying
 no per-client detail.
 
+## Subscription pressure
+
+`GET /v1/providers/limits` reports how much of each provider's allowance is
+spent. It is read off the responses the proxy already carried, never polled:
+both upstreams publish the figure on ordinary calls — Anthropic in
+`anthropic-ratelimit-unified-5h-utilization` (a fraction, with its 7-day
+sibling and reset epochs), the Codex backend in `x-codex-primary-used-percent`
+(already a percentage, with the window's length in minutes). `post_with_retries`
+is the one choke point every upstream POST passes, so the reading costs
+nothing and no credential is spent measuring itself. That matters here: these
+are subscription OAuth credentials — the same ones the minds spend — and
+Anthropic's own usage endpoint answers 429 to a monitor that leans on it.
+
+The reading is taken before the retry decision, not after. A 429 carries the
+most important figure there is, and recording only the final attempt drops
+exactly the near-exhausted ones.
+
+Codex names its windows by rank and Anthropic by length; they are relabelled
+by length so the two can be read side by side. A provider that has taken no
+traffic is reported with `reporting: false` rather than zero — an empty bar
+and an unobserved provider are opposite claims, and only one of them means
+there is headroom. A response carrying no limit headers leaves the last
+reading alone, so one local Ollama turn cannot blank the Anthropic panel.
+Every reading carries its age and goes `stale` on its own.
+
+The store is in-memory and per-process: it holds the last thing this proxy
+observed, not a ledger. `usage_log` is the ledger.
+
+## Context windows
+
+`models.context_window` is how many tokens a deployment accepts. The proxy
+owns the model map, so this is where the number belongs — a reader asking
+"how full is this conversation" has one place to learn the denominator.
+
+Null means nobody has declared it, and it is relayed as null rather than as a
+guess: a conversation drawn against an invented window renders at 40% when it
+is at 95%. Note that this is the *deployment's* window, which is not always
+the running process's — a Claude harness spawned without the long-context pin
+holds 200k on a row that says a million — so a caller that can see the live
+conversation should prefer what that conversation reports.
+
 ## Layout
 
 ```
