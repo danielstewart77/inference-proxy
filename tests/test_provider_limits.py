@@ -175,3 +175,82 @@ def test_a_malformed_utilisation_value_is_ignored_rather_than_crashing():
 def test_host_is_taken_from_a_url_so_callers_pass_what_they_have():
     assert provider_limits.host_of("https://api.anthropic.com/v1/messages") == "api.anthropic.com"
     assert provider_limits.host_of("https://chatgpt.com/backend-api/codex/responses") == "chatgpt.com"
+
+
+# --- the capture is actually wired into the upstream call -------------------
+
+
+class _FakeResponse:
+    def __init__(self, status_code, headers):
+        self.status_code = status_code
+        self.headers = headers
+
+    async def aread(self):
+        return b""
+
+    async def aclose(self):
+        return None
+
+
+class _FakeClient:
+    """Answers whatever the test queued, in order."""
+
+    def __init__(self, responses):
+        self._responses = list(responses)
+
+    def build_request(self, *args, **kwargs):
+        return object()
+
+    async def send(self, *args, **kwargs):
+        return self._responses.pop(0)
+
+    async def post(self, *args, **kwargs):
+        return self._responses.pop(0)
+
+
+def test_an_upstream_response_records_its_allowance(monkeypatch):
+    """The one line that populates the whole feature. Deleting it leaves
+    every provider reporting `reporting: false` forever, on a page whose
+    entire job is showing allowance — and the rest of the suite stays green,
+    because everything else tests the store rather than the writer."""
+    import app.azure as azure
+
+    monkeypatch.setattr(
+        azure, "shared_client", lambda: _FakeClient([_FakeResponse(200, ANTHROPIC_HEADERS)])
+    )
+
+    import asyncio
+
+    asyncio.run(
+        azure.post_with_retries(
+            "https://api.anthropic.com/v1/messages", {}, {}, stream=False, log_prefix="[t]"
+        )
+    )
+
+    snapshot = provider_limits.snapshot()
+    assert snapshot["api.anthropic.com"]["windows"][0]["used_percent"] == 7.0
+
+
+def test_a_rate_limited_response_records_before_it_is_retried(monkeypatch):
+    """A 429 carries the reading that matters most — the account nearly
+    spent. Recording only the final attempt is how the near-exhausted
+    figures are the ones that never reach the page."""
+    import app.azure as azure
+
+    hot = {**ANTHROPIC_HEADERS, "anthropic-ratelimit-unified-5h-utilization": "0.99"}
+    monkeypatch.setattr(azure, "retry_delay", lambda *a, **k: 0)
+    monkeypatch.setattr(
+        azure,
+        "shared_client",
+        lambda: _FakeClient([_FakeResponse(429, hot), _FakeResponse(200, {})]),
+    )
+
+    import asyncio
+
+    asyncio.run(
+        azure.post_with_retries(
+            "https://api.anthropic.com/v1/messages", {}, {}, stream=False, log_prefix="[t]"
+        )
+    )
+
+    assert provider_limits.snapshot()["api.anthropic.com"]["windows"][0]["used_percent"] == 99.0

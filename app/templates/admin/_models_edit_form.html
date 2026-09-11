@@ -56,6 +56,10 @@
         <label>Cost per 1M cache read</label>
         <input type="text" name="cost_per_million_cache_read" value="{{ m.cost_per_million_cache_read if m.cost_per_million_cache_read is not none else '' }}">
       </div>
+      <div>
+        <label>Context window (tokens)</label>
+        <input type="number" min="1" name="context_window" value="{{ m.context_window if m.context_window is not none else '' }}">
+      </div>
     </div>
   </form>
 

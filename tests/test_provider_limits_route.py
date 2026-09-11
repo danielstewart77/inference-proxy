@@ -160,3 +160,74 @@ def test_an_undeclared_context_window_relays_as_null_not_zero(client):
     models = {m["id"]: m for m in client.get("/v1/models").json()["data"]}
 
     assert models["gpt-5.6"]["context_window"] is None
+
+
+def test_a_stale_reading_is_reported_as_stale_over_the_wire(client, monkeypatch):
+    """The module knows when a figure has aged out; the route has to say so.
+    Hardcoding the flag false leaves the page presenting a figure from
+    yesterday as this minute's."""
+    import time as _time
+
+    provider_limits.record(
+        "api.anthropic.com",
+        ANTHROPIC_HEADERS,
+        now=_time.time() - provider_limits.STALE_AFTER_SECONDS - 10,
+    )
+
+    row = _by_name(client.get("/v1/providers/limits").json())["anthropic"]
+
+    assert row["stale"] is True
+    assert row["windows"][0]["used_percent"] == 42.0
+
+
+def test_a_fresh_reading_is_not_reported_as_stale(client):
+    provider_limits.record("api.anthropic.com", ANTHROPIC_HEADERS)
+
+    assert _by_name(client.get("/v1/providers/limits").json())["anthropic"]["stale"] is False
+
+
+def test_a_context_window_can_be_set_and_comes_back_on_the_listing(client, monkeypatch):
+    """Without a write path the column, its migration and its relay are an
+    elaborate way of returning null forever — every column on the dashboard
+    reading "context window unknown" with no way to fix it."""
+    # The admin console is session-authed; without this the POST answers 303
+    # to the login page and the assertion below would be checking that a
+    # redirect happened rather than that anything was written.
+    async def _allow(request):
+        return None
+
+    monkeypatch.setattr("app.admin.models.require_html_admin", _allow)
+
+    response = client.post(
+        "/admin/models/1",
+        data={
+            "target_uri": "",
+            "provider_id": "1",
+            "harnesses": "",
+            "credential_id": "",
+            "api_version": "",
+            "auth_scheme": "bearer",
+            "label": "",
+            "description": "",
+            "cost_per_million_input": "",
+            "cost_per_million_output": "",
+            "cost_per_million_cache_write": "",
+            "cost_per_million_cache_read": "",
+            "context_window": "393216",
+            "enabled": "on",
+        },
+        follow_redirects=False,
+    )
+
+    assert response.status_code in (303, 302)
+    models = {m["id"]: m for m in client.get("/v1/models").json()["data"]}
+    assert models["claude-opus-5"]["context_window"] == 393216
+
+
+def test_a_blank_context_window_stays_null_rather_than_becoming_zero(client):
+    """Zero is a denominator. Blank is the absence of one, and the page
+    renders them differently on purpose."""
+    from app.admin.models import _parse_context_window
+
+    assert _parse_context_window("") is None
+    assert _parse_context_window("   ") is None

@@ -92,6 +92,12 @@ async def post_with_retries(
             await asyncio.sleep(delay)
             continue
 
+        # Recorded before the retry decision, not after it. A 429 carries
+        # the most important allowance reading there is — the one taken when
+        # the account is nearly spent — and reading it only off the final
+        # attempt drops exactly those.
+        provider_limits.record(provider_limits.host_of(url), response.headers)
+
         if (
             response.status_code in RETRYABLE_UPSTREAM_STATUS
             and attempt < MAX_UPSTREAM_ATTEMPTS
@@ -109,13 +115,6 @@ async def post_with_retries(
             await asyncio.sleep(delay)
             continue
 
-        # Every upstream POST passes here, whatever shape it is — which is
-        # why the subscription-pressure reading is taken at this one point
-        # rather than in each route module. Anthropic and the Codex backend
-        # both publish their rolling-limit utilisation on ordinary responses,
-        # so the figure costs nothing; a response that carries none leaves
-        # the last reading alone.
-        provider_limits.record(provider_limits.host_of(url), response.headers)
         return response
     raise AssertionError("unreachable")
 
