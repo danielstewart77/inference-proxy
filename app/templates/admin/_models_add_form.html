@@ -58,6 +58,11 @@
         <label for="ccr">Cost per 1M cache-read tokens (USD, optional)</label>
         <input type="text" id="ccr" name="cost_per_million_cache_read" placeholder="e.g. 0.500000">
       </div>
+      <div>
+        <label for="ctxw">Context window (tokens, optional)</label>
+        <input type="number" min="1" id="ctxw" name="context_window" placeholder="e.g. 200000">
+        <small>Left blank, a conversation's fullness reads as unknown rather than being drawn against a guess.</small>
+      </div>
     </div>
     <div class="form-footer">
       <label class="checkbox-label">

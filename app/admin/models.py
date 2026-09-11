@@ -179,6 +179,24 @@ def _upstream_required(target_uri: Optional[str], provider_id: Optional[int]) ->
     return uri
 
 
+def _parse_context_window(raw: Optional[str]) -> Optional[int]:
+    """The model's context window, or None when nobody has declared it.
+
+    Blank stays None rather than becoming zero: the console divides a
+    conversation's size by this, and a zero denominator renders every
+    session as infinitely full while a null renders honestly as unknown.
+    """
+    if raw is None or raw.strip() == "":
+        return None
+    try:
+        value = int(raw.strip())
+    except ValueError:
+        raise HTTPException(status_code=400, detail=f"Invalid context window: {raw!r}")
+    if value <= 0:
+        raise HTTPException(status_code=400, detail="context_window must be positive")
+    return value
+
+
 def _parse_decimal(raw: Optional[str]) -> Optional[Decimal]:
     if raw is None or raw.strip() == "":
         return None
@@ -285,6 +303,7 @@ async def add_model(
     cost_per_million_output: str = Form(""),
     cost_per_million_cache_write: str = Form(""),
     cost_per_million_cache_read: str = Form(""),
+    context_window: str = Form(""),
     enabled: str = Form("on"),
     admin_only: str = Form(""),
     session: AsyncSession = Depends(get_session),
@@ -330,6 +349,7 @@ async def add_model(
             cost_per_million_output=_parse_decimal(cost_per_million_output),
             cost_per_million_cache_write=_parse_decimal(cost_per_million_cache_write),
             cost_per_million_cache_read=_parse_decimal(cost_per_million_cache_read),
+            context_window=_parse_context_window(context_window),
         )
     )
     await session.commit()
@@ -352,6 +372,7 @@ async def update_model(
     cost_per_million_output: str = Form(""),
     cost_per_million_cache_write: str = Form(""),
     cost_per_million_cache_read: str = Form(""),
+    context_window: str = Form(""),
     enabled: str = Form(""),  # checkbox: "on" if checked, "" if not
     admin_only: str = Form(""),  # checkbox: "on" if checked, "" if not
     session: AsyncSession = Depends(get_session),
@@ -380,6 +401,7 @@ async def update_model(
     target.description = _optional_str(description, max_len=4000)
     target.enabled = (enabled == "on")
     target.admin_only = (admin_only == "on")
+    target.context_window = _parse_context_window(context_window)
     target.cost_per_million_input = _parse_decimal(cost_per_million_input)
     target.cost_per_million_output = _parse_decimal(cost_per_million_output)
     target.cost_per_million_cache_write = _parse_decimal(cost_per_million_cache_write)

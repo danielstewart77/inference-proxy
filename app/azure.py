@@ -11,6 +11,7 @@ import asyncio
 
 import httpx
 
+from app import provider_limits
 from app.utils import log
 
 _shared_client: httpx.AsyncClient | None = None
@@ -90,6 +91,12 @@ async def post_with_retries(
             )
             await asyncio.sleep(delay)
             continue
+
+        # Recorded before the retry decision, not after it. A 429 carries
+        # the most important allowance reading there is — the one taken when
+        # the account is nearly spent — and reading it only off the final
+        # attempt drops exactly those.
+        provider_limits.record(provider_limits.host_of(url), response.headers)
 
         if (
             response.status_code in RETRYABLE_UPSTREAM_STATUS
