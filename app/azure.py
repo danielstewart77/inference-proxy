@@ -11,6 +11,7 @@ import asyncio
 
 import httpx
 
+from app import provider_limits
 from app.utils import log
 
 _shared_client: httpx.AsyncClient | None = None
@@ -108,6 +109,13 @@ async def post_with_retries(
             await asyncio.sleep(delay)
             continue
 
+        # Every upstream POST passes here, whatever shape it is — which is
+        # why the subscription-pressure reading is taken at this one point
+        # rather than in each route module. Anthropic and the Codex backend
+        # both publish their rolling-limit utilisation on ordinary responses,
+        # so the figure costs nothing; a response that carries none leaves
+        # the last reading alone.
+        provider_limits.record(provider_limits.host_of(url), response.headers)
         return response
     raise AssertionError("unreachable")
 

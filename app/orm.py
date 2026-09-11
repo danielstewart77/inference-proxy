@@ -234,6 +234,15 @@ class Model(Base):
     cost_per_million_cache_read: Mapped[Optional[float]] = mapped_column(
         Numeric(10, 6), nullable=True
     )
+    # Total context this deployment accepts, in tokens. Null means nobody has
+    # declared it, and it is relayed as null rather than as a guess: a reader
+    # drawing a conversation's size against a window it invented reports a
+    # session at 40% that is actually at 95%. The proxy owns the model map, so
+    # this is the one place the number belongs — but it is the *deployment's*
+    # window, which is not always the running process's (a Claude harness
+    # spawned without the 1M pin holds 200k on a row that says 1000000), so a
+    # caller that can see the live conversation should prefer what it reports.
+    context_window: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, server_default=func.now()
     )

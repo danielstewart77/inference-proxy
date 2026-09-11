@@ -30,6 +30,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.credentials import CredentialError, codex_account_id, resolve_secret
+from app import provider_limits
 from app.orm import Model, Provider
 
 REAL_ANTHROPIC_HOST = "api.anthropic.com"
@@ -376,6 +377,11 @@ async def listing_for(
                 "label": row.label,
                 "description": row.description,
                 "wires": wires,
+                # Null when undeclared, and deliberately not coerced: a
+                # caller drawing a fullness bar needs "unknown" to stay
+                # distinguishable from a real window, or it draws a
+                # conversation against a denominator nobody set.
+                "context_window": row.context_window,
             }
         )
     return {"object": "list", "data": data}
@@ -412,3 +418,39 @@ def reject_wrong_protocol(
             )
     else:
         raise ValueError(f"Unknown expected protocol: {expected}")
+
+
+async def provider_limits_report(session: AsyncSession) -> list[dict]:
+    """Every provider, each with the pressure reading taken from its traffic.
+
+    The join is by host because that is what the reading is keyed to:
+    `post_with_retries` is one choke point for every upstream shape and holds
+    a URL, not a provider row. Providers sharing a host share a reading,
+    which is correct — the allowance belongs to the credential behind the
+    host, not to the row naming it.
+
+    Every provider appears whether or not it has reported. A provider absent
+    from the list would be read as "not configured"; one present with
+    `reporting: false` is the honest "configured, nothing observed yet",
+    which is the normal state for the first minute after a restart and the
+    permanent state for an upstream that publishes no limit headers at all.
+    """
+    readings = provider_limits.snapshot()
+    rows = (await session.execute(select(Provider).order_by(Provider.name))).scalars().all()
+    report = []
+    for row in rows:
+        host = provider_limits.host_of(row.base_url or "")
+        reading = readings.get(host)
+        report.append(
+            {
+                "name": row.name,
+                "label": row.label or row.name,
+                "host": host,
+                "reporting": reading is not None,
+                "windows": reading["windows"] if reading else [],
+                "observed_at": reading["observed_at"] if reading else None,
+                "age_seconds": reading["age_seconds"] if reading else None,
+                "stale": reading["stale"] if reading else False,
+            }
+        )
+    return report

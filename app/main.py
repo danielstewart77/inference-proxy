@@ -30,7 +30,7 @@ from app.auth import (
 )
 from app.config import config
 from app.db import SessionLocal, get_session
-from app.deployments import listing_for
+from app.deployments import listing_for, provider_limits_report
 from app.orm import Model
 from app.proxy import anthropic, chat_completions, compact, responses
 from app.proxy import websocket as ws_router
@@ -148,6 +148,30 @@ def create_app() -> FastAPI:
         """
         is_admin = _require_listing_role(authorization, api_key, x_api_key)
         return await listing_for(session, harness=harness, is_admin=is_admin)
+
+    @app.get("/v1/providers/limits")
+    async def provider_limit_report(
+        authorization: str | None = Header(None, alias="Authorization"),
+        api_key: str | None = Header(None, alias="api-key"),
+        x_api_key: str | None = Header(None, alias="x-api-key"),
+        session: AsyncSession = Depends(get_session),
+    ):
+        """How much of each provider's subscription allowance is spent.
+
+        Read off responses already proxied rather than polled: the
+        credentials are subscription OAuth — the same ones the minds spend —
+        and a monitor polling Anthropic's usage route would degrade the
+        allowance it reports. A provider that has taken no traffic this
+        process is reported with `reporting: false`, which the caller must
+        render as unknown; an empty bar and a quiet provider are opposite
+        claims.
+
+        Key-guarded like the listing: this names what the hive is spending
+        and how close it is to being cut off.
+        """
+        if not validate_api_key(authorization, api_key or x_api_key):
+            raise HTTPException(status_code=401, detail="Invalid API key")
+        return {"providers": await provider_limits_report(session)}
 
     @app.get("/v1/anthropic/models")
     async def list_anthropic_models():
