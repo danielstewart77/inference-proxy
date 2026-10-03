@@ -165,6 +165,12 @@ ALL_WIRES = ("anthropic_messages", "openai_responses", "chat_completions")
 HARNESS_WIRES = {
     "claude": ("anthropic_messages",),
     "codex": ("openai_responses", "chat_completions"),
+    # dsh reaches a model through its hive profile's `llm-pi-ai` provider
+    # route, declared `api: openai-completions` — chat completions and nothing
+    # else. Without a row here its picker is offered nothing at all, which
+    # reads as a mind whose key may address no models rather than a harness
+    # the listing had never been told about.
+    "dsh": ("chat_completions",),
     "hermes": ALL_WIRES,
 }
 
