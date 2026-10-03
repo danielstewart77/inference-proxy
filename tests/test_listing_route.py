@@ -51,6 +51,18 @@ async def client(monkeypatch):
             )
         )
         setup.add(Model(deployment_name="everyones", provider_id=provider.id))
+        messages_only = Provider(
+            name="anthropic-ish",
+            label="Messages only",
+            base_url="http://192.168.4.64:9999",
+            messages_path="/v1/messages",
+            credential_id=credential.id,
+        )
+        setup.add(messages_only)
+        await setup.flush()
+        setup.add(
+            Model(deployment_name="messages-wire-only", provider_id=messages_only.id)
+        )
         setup.add(
             Model(
                 deployment_name="reserved",
@@ -105,3 +117,17 @@ def test_the_listing_is_not_public(client, monkeypatch):
     monkeypatch.setattr(main, "validate_api_key", lambda *a, **k: False)
 
     assert client.get("/v1/models").status_code == 401
+
+
+def test_a_dsh_caller_is_offered_the_models_it_can_actually_send_to(client):
+    """A dsh mind speaks chat completions, so that is what its picker gets.
+
+    The two exclusions are the whole point: a model reachable only on the
+    Anthropic wire is one dsh cannot address, and a model withheld from
+    everyone but claude is one it may not see.
+    """
+    offered = _names(client.get("/v1/models?harness=dsh"))
+
+    assert "everyones" in offered
+    assert "messages-wire-only" not in offered
+    assert "claude-only" not in offered
