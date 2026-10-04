@@ -184,7 +184,12 @@ ALL_WIRES = ("anthropic_messages", "openai_responses", "chat_completions")
 #: endpoint per shape.
 HARNESS_WIRES = {
     "claude": ("anthropic_messages",),
-    "codex": ("openai_responses", "chat_completions"),
+    # Codex speaks the Responses API and nothing else. Listing it for chat
+    # completions as well cost nothing while every chat-capable upstream was
+    # also responses-capable, but the chat route now translates onto the
+    # Anthropic wire — so that extra shape would offer a Codex picker every
+    # Claude model and then refuse each one at request time.
+    "codex": ("openai_responses",),
     # dsh reaches a model through its hive profile's `llm-pi-ai` provider
     # route, declared `api: openai-completions` — chat completions and nothing
     # else. Without a row here its picker is offered nothing at all, which
@@ -228,7 +233,11 @@ def uri_serves(target_uri: Optional[str], wire: str) -> bool:
     if wire == "openai_responses":
         return probe.is_openai_responses
     if wire == "chat_completions":
-        return probe.is_openai_responses or probe.is_native_chat_completions
+        return (
+            probe.is_openai_responses
+            or probe.is_native_chat_completions
+            or probe.is_anthropic_messages
+        )
     return False
 
 
@@ -256,11 +265,13 @@ def resolve_target_uri(row: Model, wire: Optional[str]) -> Optional[str]:
 
     path = provider.path_for(wire) if wire else None
     if path is None and wire is not None:
-        # `chat_completions` is the one shape with a stand-in: the Responses
-        # API answers it after translation, which is what the chat route
-        # already does for the Codex backend.
+        # `chat_completions` is the one shape with stand-ins: both the
+        # Responses API and Anthropic Messages answer it after translation,
+        # which is what the chat route does. Responses first, because that
+        # translation is the older and cheaper of the two — a provider
+        # serving both shapes should not take the Anthropic detour.
         if wire == "chat_completions":
-            path = provider.responses_path
+            path = provider.responses_path or provider.messages_path
         if path is None:
             return None
     if path is None:
@@ -422,7 +433,8 @@ def reject_wrong_protocol(
     """Guard against using a deployment on the wrong client route.
 
     `expected` is one of: 'anthropic_messages', 'openai_responses',
-    'chat_completions_any' (chat route accepts both responses and native chat).
+    'chat_completions_any' — the chat route accepts all three upstream
+    shapes, because it translates onto the two that are not its own.
     """
     if expected == "anthropic_messages":
         if not target.is_anthropic_messages:
@@ -437,7 +449,11 @@ def reject_wrong_protocol(
                 f"Deployment {target.name!r} is not an Azure OpenAI Responses endpoint",
             )
     elif expected == "chat_completions_any":
-        if not (target.is_openai_responses or target.is_native_chat_completions):
+        if not (
+            target.is_openai_responses
+            or target.is_native_chat_completions
+            or target.is_anthropic_messages
+        ):
             _raise(
                 error_kind, 400,
                 f"Deployment {target.name!r} is not a Chat Completions-compatible endpoint",

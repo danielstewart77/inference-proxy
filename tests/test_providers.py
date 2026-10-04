@@ -209,7 +209,10 @@ async def test_each_model_names_the_shapes_it_can_be_reached_on(session):
         "openai_responses",
         "chat_completions",
     ]
-    assert rows["claude-opus-5"] == ["anthropic_messages"]
+    # The chat route translates onto the Anthropic wire, so a Claude model is
+    # genuinely reachable on both shapes — which is what lets a
+    # chat-completions-only caller address it at all.
+    assert rows["claude-opus-5"] == ["anthropic_messages", "chat_completions"]
 
 
 async def test_a_claude_caller_is_not_offered_a_responses_only_model(session):
