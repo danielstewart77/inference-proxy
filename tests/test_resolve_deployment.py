@@ -77,3 +77,17 @@ async def test_anthropic_error_shape_is_an_envelope(session):
     with pytest.raises(HTTPException) as exc:
         await resolve_deployment(session, "nope", error_kind="anthropic")
     assert exc.value.detail["type"] == "error"
+
+
+async def test_openai_refusal_names_the_model_where_an_openai_sdk_reads_it(session):
+    """The openai SDK builds its message from ``body["error"]["message"]``.
+
+    A body it cannot find there is rendered as ``<status> status code (no
+    body)``, so the sentence naming the model never reaches the harness that
+    asked for it.
+    """
+    with pytest.raises(HTTPException) as exc:
+        await resolve_deployment(session, "no-such-model", error_kind="openai")
+    assert exc.value.status_code == 404
+    assert "no-such-model" in exc.value.detail["error"]["message"]
+    assert exc.value.detail["error"]["type"] == "invalid_request_error"

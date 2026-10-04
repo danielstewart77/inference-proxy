@@ -68,7 +68,13 @@ def create_app() -> FastAPI:
         loc = is_redirect_exception(exc) if isinstance(exc, HTTPException) else None
         if loc:
             return RedirectResponse(loc, status_code=303)
-        # Default behavior: re-raise the standard handler shape.
+        # A dict detail is already a provider-shaped error envelope (see
+        # `deployments._raise`), and it is the body the caller's SDK parses.
+        # Wrapping it under `detail` buries `error.message` one level deeper
+        # than every client looks, which is how a refusal naming the model
+        # reaches a harness as "404 status code (no body)".
+        if isinstance(exc.detail, dict):
+            return JSONResponse(exc.detail, status_code=exc.status_code)
         return JSONResponse({"detail": exc.detail}, status_code=exc.status_code)
 
     # ---- Startup ------------------------------------------------------------
