@@ -28,9 +28,7 @@ from app.deployments import (
 from app.main import create_app
 from app.orm import Base, Credential, Model, Provider
 from app.proxy.chat_to_anthropic import (
-    DEFAULT_MAX_TOKENS,
-    THINKING_BUDGETS,
-    THINKING_HEADROOM,
+    UntranslatableRequest,
     stream_anthropic_to_completions,
     transform_anthropic_to_completions,
     transform_to_anthropic_messages,
@@ -203,6 +201,37 @@ def test_two_results_for_one_assistant_turn_share_a_single_user_turn():
     assert [b["tool_use_id"] for b in out["messages"][1]["content"]] == ["a", "b"]
 
 
+def test_a_developer_message_is_hoisted_like_a_system_one():
+    """Requirement 4 — the newer spelling of a system prompt is not left inline."""
+    out = _translate(
+        messages=[
+            {"role": "developer", "content": "Be terse."},
+            {"role": "user", "content": "hello"},
+        ]
+    )
+
+    assert out["system"] == "Be terse."
+    assert [m["role"] for m in out["messages"]] == ["user"]
+
+
+def test_a_hosted_image_arrives_as_a_url_source():
+    """Requirement 4 — not every attachment is inlined as base64."""
+    out = _translate(
+        messages=[
+            {
+                "role": "user",
+                "content": [
+                    {"type": "image_url", "image_url": {"url": "https://x.test/a.png"}}
+                ],
+            }
+        ]
+    )
+
+    assert out["messages"][0]["content"] == [
+        {"type": "image", "source": {"type": "url", "url": "https://x.test/a.png"}}
+    ]
+
+
 def test_an_attached_image_becomes_a_base64_image_block():
     """Requirement 4 — an image arrives in the form this wire expects."""
     out = _translate(
@@ -229,21 +258,152 @@ def test_an_attached_image_becomes_a_base64_image_block():
     ]
 
 
+@pytest.mark.parametrize("spelling", ["text", "input_text", "output_text"])
+def test_a_text_part_reaches_the_model_however_it_is_spelled(spelling):
+    """Requirement 4 — a turn's body is never dropped for its part type.
+
+    `input_text` and `output_text` are this proxy's *own* other translation's
+    spelling, so the same client body reached a Codex model intact and a
+    Claude model with the text gone — a 200 answering a question the model
+    was never asked.
+    """
+    out = _translate(
+        messages=[{"role": "user", "content": [{"type": spelling, "text": "2 + 2?"}]}]
+    )
+
+    assert out["messages"] == [
+        {"role": "user", "content": [{"type": "text", "text": "2 + 2?"}]}
+    ]
+
+
+def test_an_assistant_turn_is_not_dropped_for_its_part_spelling():
+    """A lost assistant turn rewrites the conversation the model answers."""
+    out = _translate(
+        messages=[
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "content": [{"type": "output_text", "text": "hello"}]},
+            {"role": "user", "content": "and now?"},
+        ]
+    )
+
+    assert [m["role"] for m in out["messages"]] == ["user", "assistant", "user"]
+
+
+def test_an_image_already_in_anthropic_form_passes_through():
+    """Requirement 4 — the target wire's own spelling is not thrown away."""
+    source = {"type": "base64", "media_type": "image/png", "data": "QUJD"}
+    out = _translate(
+        messages=[{"role": "user", "content": [{"type": "image", "source": source}]}]
+    )
+
+    assert out["messages"][0]["content"] == [{"type": "image", "source": source}]
+
+
+@pytest.mark.parametrize(
+    "part",
+    [
+        {"type": "image_url", "image_url": {"url": ""}},
+        {"type": "image_url", "image_url": {"url": "data:image/png;base64"}},
+        {"type": "input_audio", "input_audio": {"data": "AAA"}},
+    ],
+)
+def test_an_attachment_this_wire_cannot_carry_is_refused_not_dropped(part):
+    """Dropping it leaves a 200 answering about a file the model never saw."""
+    with pytest.raises(UntranslatableRequest):
+        _translate(messages=[{"role": "user", "content": [part]}])
+
+
+def test_a_structured_tool_result_reaches_the_model_as_json():
+    """A Python repr hands the model single quotes, `True` and `None`."""
+    out = _translate(
+        messages=[
+            {
+                "role": "assistant",
+                "tool_calls": [{"id": "c1", "function": {"name": "f", "arguments": "{}"}}],
+            },
+            {"role": "tool", "tool_call_id": "c1", "content": {"ok": True, "rows": 3}},
+        ]
+    )
+
+    assert out["messages"][1]["content"][0]["content"] == '{"ok": true, "rows": 3}'
+
+
+def test_an_empty_stop_string_is_not_sent_as_a_stop_sequence():
+    """Anthropic refuses it, so a client defaulting `stop` to "" is locked out."""
+    assert "stop_sequences" not in _translate(stop="")
+    assert _translate(stop="END")["stop_sequences"] == ["END"]
+
+
+def test_a_tool_whose_schema_arrived_serialised_is_still_a_tool():
+    out = _translate(
+        tools=[
+            {
+                "type": "function",
+                "function": {
+                    "name": "f",
+                    "parameters": '{"type": "object", "properties": {}}',
+                },
+            }
+        ]
+    )
+
+    assert out["tools"][0]["input_schema"] == {"type": "object", "properties": {}}
+
+
+def test_a_tool_with_no_function_name_is_refused_rather_than_dropped():
+    """A silently dropped tool is a model answering in prose for no reason."""
+    with pytest.raises(UntranslatableRequest):
+        _translate(tools=[{"type": "web_search_preview"}])
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"tool_choice": {"type": "function", "function": "f"}},
+        {"messages": [{"role": "assistant", "tool_calls": [{"id": "x", "function": "f"}]}]},
+    ],
+)
+def test_a_malformed_field_does_not_become_an_internal_error(body):
+    """A 500 reads as a defect in the proxy; this is the caller's own input."""
+    body.setdefault("tools", [{"type": "function", "function": {"name": "f"}}])
+    _translate(**body)
+
+
 def test_max_tokens_is_always_present_and_honours_the_caller():
     """Anthropic refuses a body with no `max_tokens`."""
-    assert _translate()["max_tokens"] == DEFAULT_MAX_TOKENS
+    assert _translate()["max_tokens"] == 8192
     assert _translate(max_tokens=512)["max_tokens"] == 512
+    assert _translate(max_completion_tokens=777)["max_tokens"] == 777
 
 
-@pytest.mark.parametrize("effort", sorted(THINKING_BUDGETS))
-def test_a_reasoning_effort_becomes_a_thinking_budget(effort):
+@pytest.mark.parametrize(
+    "effort,budget",
+    [
+        ("minimal", 1024),
+        ("low", 4096),
+        ("medium", 8192),
+        ("high", 16384),
+        ("xhigh", 32768),
+    ],
+)
+def test_a_reasoning_effort_becomes_a_thinking_budget(effort, budget):
     """Requirement 6 — an effort is translated, never dropped."""
     out = _translate(reasoning_effort=effort, max_tokens=256)
 
-    budget = THINKING_BUDGETS[effort]
     assert out["thinking"] == {"type": "enabled", "budget_tokens": budget}
-    # `max_tokens` has to clear the budget or the request is refused.
-    assert out["max_tokens"] == budget + THINKING_HEADROOM
+    # Anthropic's floor is 1024, and a budget below it is refused outright.
+    assert budget >= 1024
+    # `max_tokens` has to *exceed* the budget or the request is refused, so
+    # the ceiling rises to leave room for a reply behind the thinking.
+    assert out["max_tokens"] > budget
+    assert out["max_tokens"] == budget + 4096
+
+
+def test_the_nested_reasoning_form_is_read_too(effort="high"):
+    """Requirement 6 — an SDK sending `reasoning.effort` is not dropped."""
+    out = _translate(reasoning={"effort": effort})
+
+    assert out["thinking"] == {"type": "enabled", "budget_tokens": 16384}
 
 
 def test_thinking_is_absent_when_the_caller_asked_for_none():
@@ -463,6 +623,112 @@ async def test_a_streamed_tool_call_is_numbered_among_tool_calls_not_blocks():
     )
 
 
+def test_a_refused_generation_is_not_reported_as_a_finished_one():
+    """`stop` on a refusal is an empty successful answer the caller won't retry."""
+    out = transform_anthropic_to_completions(
+        {"content": [{"type": "text", "text": ""}], "stop_reason": "refusal"},
+        "claude-opus-5",
+    )
+
+    assert out["choices"][0]["finish_reason"] == "content_filter"
+
+
+def test_running_out_of_context_is_reported_as_a_length_stop():
+    out = transform_anthropic_to_completions(
+        {
+            "content": [{"type": "text", "text": "x"}],
+            "stop_reason": "model_context_window_exceeded",
+        },
+        "claude-opus-5",
+    )
+
+    assert out["choices"][0]["finish_reason"] == "length"
+
+
+@pytest.mark.asyncio
+async def test_a_stream_cut_mid_tool_call_is_not_reported_as_a_finished_call():
+    """A truncated stream looks identical to a finished one at end of iteration.
+
+    Handed a success terminator anyway, the caller reassembles half a JSON
+    object and is told the call is complete — and the turn meters 200.
+    """
+    lines = _sse(
+        [
+            {
+                "type": "content_block_start",
+                "index": 0,
+                "content_block": {"type": "tool_use", "id": "t1", "name": "delete_rows"},
+            },
+            {
+                "type": "content_block_delta",
+                "index": 0,
+                "delta": {"type": "input_json_delta", "partial_json": '{"path":"/ho'},
+            },
+        ]
+    )
+    raw = [
+        line
+        async for line in stream_anthropic_to_completions(
+            _FakeStream(lines), "claude-opus-5"
+        )
+    ]
+
+    assert not any(line.strip() == "data: [DONE]" for line in raw)
+    assert not any(
+        json.loads(line[len("data: ") :]).get("choices", [{}])[0].get("finish_reason")
+        for line in raw
+        if line.startswith("data: ")
+    )
+    assert "ended before the turn completed" in raw[-1]
+
+
+@pytest.mark.asyncio
+async def test_a_failure_mid_stream_is_not_followed_by_a_success_terminator():
+    """A reader that skips chunks with no `choices` would see a clean answer."""
+    lines = _sse(
+        [
+            {
+                "type": "content_block_delta",
+                "index": 0,
+                "delta": {"type": "text_delta", "text": "Here is "},
+            },
+            {"type": "error", "error": {"type": "overloaded_error", "message": "Overloaded"}},
+        ]
+    )
+    raw = [
+        line
+        async for line in stream_anthropic_to_completions(
+            _FakeStream(lines), "claude-opus-5"
+        )
+    ]
+
+    assert not any(line.strip() == "data: [DONE]" for line in raw)
+    assert json.loads(raw[-1][len("data: ") :])["error"]["message"] == "Overloaded"
+
+
+@pytest.mark.asyncio
+async def test_a_streamed_turn_reports_its_token_counts_to_the_caller():
+    """The holder is the only channel by which a streamed turn gets metered."""
+    captured: dict = {}
+    lines = _sse(
+        [
+            {"type": "message_start", "message": {"usage": {"input_tokens": 31}}},
+            {
+                "type": "message_delta",
+                "delta": {"stop_reason": "end_turn"},
+                "usage": {"output_tokens": 12},
+            },
+        ]
+    )
+    async for _ in stream_anthropic_to_completions(
+        _FakeStream(lines), "claude-opus-5", usage_holder=captured
+    ):
+        pass
+
+    assert captured["input_tokens"] == 31
+    assert captured["output_tokens"] == 12
+
+
 # ---------- Requirement 5: the upstream's own words ----------
 
 
@@ -496,6 +762,16 @@ async def client(monkeypatch):
                 auth_scheme="x_api_key",
             )
         )
+        responses = Provider(
+            name="openai",
+            label="OpenAI",
+            base_url="https://foundry.test",
+            responses_path="/v1/responses",
+            credential_id=credential.id,
+        )
+        setup.add(responses)
+        await setup.flush()
+        setup.add(Model(deployment_name="gpt-6-sol", provider_id=responses.id))
         await setup.commit()
 
     async def _session():
@@ -597,3 +873,184 @@ def test_a_chat_caller_reaches_a_claude_model_over_http(client, monkeypatch):
     choice = response.json()["choices"][0]
     assert choice["finish_reason"] == "tool_calls"
     assert choice["message"]["tool_calls"][0]["function"]["name"] == "get_weather"
+
+
+def _refusal(status: int, body, *, raw: bool = False):
+    """A stubbed upstream that refuses. The transport is the only thing faked."""
+
+    async def _refuse(url, headers, body_sent, *, stream, log_prefix):
+        request = httpx.Request("POST", url)
+        if raw:
+            return httpx.Response(status, text=body, request=request)
+        return httpx.Response(status, json=body, request=request)
+
+    return _refuse
+
+
+@pytest.mark.parametrize("streaming", [False, True])
+@pytest.mark.parametrize("model", ["claude-opus-5", "gpt-6-sol"])
+def test_every_translating_path_hands_back_the_upstream_refusal(
+    client, monkeypatch, model, streaming
+):
+    """Requirement 5 — on every path, not just the one that was easiest.
+
+    Both translations rebuild the request, and both have a streaming and a
+    non-streaming transport. A reworded refusal on any of the four is a
+    sentence an OpenAI client renders as "no body", so the operator reading
+    the status has nothing to act on.
+    """
+    import app.proxy.chat_completions as chat
+
+    upstream_body = {
+        "error": {"type": "rate_limit_error", "message": "quota exhausted until 4pm"}
+    }
+    monkeypatch.setattr(chat, "post_with_retries", _refusal(429, upstream_body))
+
+    response = client.post(
+        "/v1/chat/completions",
+        json={
+            "model": model,
+            "stream": streaming,
+            "messages": [{"role": "user", "content": "hi"}],
+        },
+        headers={"Authorization": "Bearer test"},
+    )
+
+    assert response.status_code == 429
+    assert response.json() == upstream_body
+
+
+def test_a_refusal_that_is_not_json_is_wrapped_so_a_client_can_read_it(
+    client, monkeypatch
+):
+    """Requirement 5 — a gateway's HTML 502 still has to carry its words."""
+    import app.proxy.chat_completions as chat
+
+    monkeypatch.setattr(
+        chat, "post_with_retries", _refusal(502, "<html>bad gateway</html>", raw=True)
+    )
+
+    response = client.post(
+        "/v1/chat/completions",
+        json={"model": "claude-opus-5", "messages": [{"role": "user", "content": "hi"}]},
+        headers={"Authorization": "Bearer test"},
+    )
+
+    assert response.status_code == 502
+    assert response.json()["error"]["message"] == "<html>bad gateway</html>"
+
+
+def test_a_streaming_chat_request_reaches_the_claude_wire_as_a_stream(
+    client, monkeypatch
+):
+    """Requirement 1 and 2 — the streaming branch, the headers, the model.
+
+    The non-streaming test said nothing about any of the three: a route that
+    served every streaming request non-streaming, sent the caller's own model
+    name upstream instead of the deployment's, or carried no credential at
+    all would have left it green.
+    """
+    import app.proxy.chat_completions as chat
+
+    sent: dict = {}
+
+    async def _answer(url, headers, body, *, stream, log_prefix):
+        sent["headers"] = headers
+        sent["body"] = body
+        sent["stream"] = stream
+        lines = _sse(
+            [
+                {"type": "message_start", "message": {"usage": {"input_tokens": 3}}},
+                {
+                    "type": "content_block_delta",
+                    "index": 0,
+                    "delta": {"type": "text_delta", "text": "88F and clear."},
+                },
+                {"type": "message_delta", "delta": {"stop_reason": "end_turn"}},
+            ]
+        )
+        return httpx.Response(
+            200,
+            text="\n".join(lines) + "\n",
+            headers={"content-type": "text/event-stream"},
+            request=httpx.Request("POST", url),
+        )
+
+    monkeypatch.setattr(chat, "post_with_retries", _answer)
+
+    response = client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "claude-opus-5",
+            "stream": True,
+            "messages": [{"role": "user", "content": "weather?"}],
+        },
+        headers={"Authorization": "Bearer test"},
+    )
+
+    assert response.status_code == 200
+    assert sent["stream"] is True
+    assert sent["body"]["stream"] is True
+    assert sent["body"]["model"] == "claude-opus-5"
+    assert sent["headers"]["x-api-key"] == "s"
+    assert sent["headers"]["anthropic-version"] == "2023-06-01"
+
+    text = "".join(
+        json.loads(line[len("data: ") :])["choices"][0]["delta"].get("content", "")
+        for line in response.text.splitlines()
+        if line.startswith("data: ") and line[6:].strip() != "[DONE]"
+    )
+    assert text == "88F and clear."
+
+
+def test_an_untranslatable_request_is_refused_in_the_callers_own_envelope(
+    client, monkeypatch
+):
+    """A 500 reads as a defect here; this names what the caller actually sent."""
+    import app.proxy.chat_completions as chat
+
+    reached = []
+
+    async def _never(url, headers, body, *, stream, log_prefix):
+        reached.append(url)
+        raise AssertionError("the upstream must not be called")
+
+    monkeypatch.setattr(chat, "post_with_retries", _never)
+
+    response = client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "claude-opus-5",
+            "messages": [{"role": "user", "content": "hi"}],
+            "tools": [{"type": "web_search_preview"}],
+        },
+        headers={"Authorization": "Bearer test"},
+    )
+
+    assert reached == []
+    assert response.status_code == 400
+    assert "web_search_preview" in response.json()["error"]["message"]
+
+
+def test_a_success_carrying_no_json_is_not_reported_as_our_own_failure(
+    client, monkeypatch
+):
+    """A reverse proxy's interstitial at 200 is the upstream's problem, said so."""
+    import app.proxy.chat_completions as chat
+
+    async def _interstitial(url, headers, body, *, stream, log_prefix):
+        return httpx.Response(
+            200, text="<html>checking your browser</html>",
+            request=httpx.Request("POST", url),
+        )
+
+    monkeypatch.setattr(chat, "post_with_retries", _interstitial)
+
+    response = client.post(
+        "/v1/chat/completions",
+        json={"model": "claude-opus-5", "messages": [{"role": "user", "content": "hi"}]},
+        headers={"Authorization": "Bearer test"},
+    )
+
+    assert response.status_code == 502
+    assert "checking your browser" in response.json()["error"]["message"]

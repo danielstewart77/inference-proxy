@@ -29,6 +29,17 @@ from typing import AsyncIterator, Optional
 
 import httpx
 
+class UntranslatableRequest(ValueError):
+    """The caller sent something this wire has no equivalent for.
+
+    Raised rather than worked around, because every alternative is worse: a
+    part quietly dropped produces a 200 answering the wrong question, and a
+    part forwarded as-is produces an upstream 400 whose sentence names an
+    Anthropic field the caller never sent. The route turns this into a 400 in
+    the caller's own envelope, naming the thing it actually sent.
+    """
+
+
 #: Anthropic rejects a body with no `max_tokens`, so one has to be supplied
 #: when the caller omitted it. Every current Claude model accepts this, which
 #: a larger default would not be true of.
@@ -53,13 +64,24 @@ _FINISH_FOR_STOP_REASON = {
     "end_turn": "stop",
     "stop_sequence": "stop",
     "max_tokens": "length",
+    "model_context_window_exceeded": "length",
     "tool_use": "tool_calls",
     "pause_turn": "stop",
-    "refusal": "stop",
+    # A refused generation is not a finished one. Reported as `stop` it is an
+    # empty successful answer, which the caller has no reason to retry or
+    # surface.
+    "refusal": "content_filter",
 }
 
 
 # ---------- Request: Chat Completions -> Anthropic Messages ----------
+
+
+#: Both this proxy's own translations and the SDKs calling it spell a text
+#: part three ways. A part whose spelling is not recognised still carries its
+#: text under a known key, and dropping it loses the turn's whole body.
+TEXT_PART_TYPES = frozenset({"text", "input_text", "output_text"})
+IMAGE_PART_TYPES = frozenset({"image_url", "image", "input_image"})
 
 
 def _text_of(content: object) -> str:
@@ -73,30 +95,48 @@ def _text_of(content: object) -> str:
     if isinstance(content, list):
         parts = []
         for part in content:
-            if isinstance(part, dict) and part.get("type") == "text":
-                parts.append(part.get("text", ""))
+            if isinstance(part, dict) and part.get("type") in TEXT_PART_TYPES:
+                parts.append(part.get("text") or "")
             elif isinstance(part, str):
                 parts.append(part)
         return "".join(parts)
     if content is None:
         return ""
-    return str(content)
+    # A dict or a number is JSON on the way out, never a Python repr: `str`
+    # on a dict yields single quotes and `True`/`None`, which the model then
+    # misreads. The Responses translation already does this; a tool result
+    # must not mean two different things depending on which wire answers.
+    try:
+        return json.dumps(content)
+    except (TypeError, ValueError):
+        return str(content)
 
 
 def _image_block(part: dict) -> Optional[dict]:
-    """An `image_url` part as an Anthropic image block.
+    """An image part as an Anthropic image block.
 
     A data URL carries the bytes and the media type inline, which is the form
     every harness attaching a local file produces. A plain http(s) URL is
-    handed over as a `url` source — Anthropic fetches it itself.
+    handed over as a `url` source — Anthropic fetches it itself. A part that
+    already carries an Anthropic `source` is passed through, since a caller
+    may legitimately send the target wire's own spelling.
+
+    An image that cannot be read is the one failure worth refusing locally:
+    dropping it leaves a valid request that returns 200 and an answer about
+    a picture the model never saw, which reads as correct and is not.
     """
-    url = part.get("image_url")
+    source = part.get("source")
+    if isinstance(source, dict) and source.get("type"):
+        return {"type": "image", "source": source}
+    url = part.get("image_url") or part.get("url")
     if isinstance(url, dict):
         url = url.get("url")
     if not isinstance(url, str) or not url:
-        return None
+        raise UntranslatableRequest("an image part carries no url or source")
     if url.startswith("data:"):
-        header, _, data = url.partition(",")
+        header, sep, data = url.partition(",")
+        if not sep or not data:
+            raise UntranslatableRequest("an image data url carries no data")
         media_type = header[5:].split(";")[0] or "image/png"
         return {
             "type": "image",
@@ -106,11 +146,20 @@ def _image_block(part: dict) -> Optional[dict]:
 
 
 def _content_blocks(content: object) -> list[dict]:
-    """A user or assistant `content` as a list of Anthropic blocks."""
+    """A user or assistant `content` as a list of Anthropic blocks.
+
+    A part whose `type` is none of the spellings known here still has its
+    text kept, under whichever key holds it. Discarding it instead produces
+    the worst available outcome: a structurally valid request that the
+    upstream answers 200 to, with the turn's body missing — so the model
+    answers a question it was never asked and nothing anywhere reports a
+    problem.
+    """
     if isinstance(content, str):
         return [{"type": "text", "text": content}] if content else []
     if not isinstance(content, list):
-        return []
+        text = _text_of(content)
+        return [{"type": "text", "text": text}] if text else []
     blocks: list[dict] = []
     for part in content:
         if isinstance(part, str):
@@ -120,14 +169,18 @@ def _content_blocks(content: object) -> list[dict]:
         if not isinstance(part, dict):
             continue
         kind = part.get("type")
-        if kind == "text":
-            text = part.get("text", "")
-            if text:
-                blocks.append({"type": "text", "text": text})
-        elif kind in ("image_url", "image"):
-            block = _image_block(part)
-            if block:
-                blocks.append(block)
+        if kind in IMAGE_PART_TYPES or "image_url" in part:
+            blocks.append(_image_block(part))
+            continue
+        text = part.get("text")
+        if not isinstance(text, str):
+            text = part.get("content") if isinstance(part.get("content"), str) else None
+        if text:
+            blocks.append({"type": "text", "text": text})
+        elif kind not in TEXT_PART_TYPES:
+            raise UntranslatableRequest(
+                f"a content part of type {kind!r} carries no text this wire can send"
+            )
     return blocks
 
 
@@ -145,7 +198,9 @@ def _tool_use_blocks(tool_calls: object) -> list[dict]:
     for call in tool_calls:
         if not isinstance(call, dict):
             continue
-        fn = call.get("function") or {}
+        fn = call.get("function")
+        if not isinstance(fn, dict):
+            fn = call if call.get("name") else {}
         raw = fn.get("arguments")
         if isinstance(raw, (dict, list)):
             parsed: object = raw
@@ -192,13 +247,23 @@ def _translate_tools(tools: object) -> list[dict]:
         fn = tool.get("function") if isinstance(tool.get("function"), dict) else tool
         name = fn.get("name")
         if not name:
-            continue
-        declared: dict = {
-            "name": name,
-            "input_schema": fn.get("parameters")
-            or fn.get("input_schema")
-            or {"type": "object", "properties": {}},
-        }
+            # A provider-native tool (`web_search_preview` and friends) has no
+            # function name and no Anthropic equivalent. Dropping it silently
+            # would leave the model answering in prose for no stated reason.
+            raise UntranslatableRequest(
+                f"tool of type {tool.get('type')!r} has no function name to translate"
+            )
+        schema = fn.get("parameters") or fn.get("input_schema")
+        if isinstance(schema, str):
+            # Some callers serialise the schema before sending it. Forwarded
+            # as a string it is not a schema at all and the tool is refused.
+            try:
+                schema = json.loads(schema)
+            except (TypeError, ValueError):
+                schema = None
+        if not isinstance(schema, dict):
+            schema = {"type": "object", "properties": {}}
+        declared: dict = {"name": name, "input_schema": schema}
         description = fn.get("description")
         if description:
             declared["description"] = description
@@ -220,8 +285,11 @@ def _translate_tool_choice(tool_choice: object) -> Optional[dict]:
         return None
     if isinstance(tool_choice, dict):
         if tool_choice.get("type") == "function" or "function" in tool_choice:
-            name = (tool_choice.get("function") or {}).get("name") or tool_choice.get("name")
-            if name:
+            fn = tool_choice.get("function")
+            name = (fn.get("name") if isinstance(fn, dict) else fn) or tool_choice.get(
+                "name"
+            )
+            if isinstance(name, str) and name:
                 return {"type": "tool", "name": name}
             return None
         kind = tool_choice.get("type")
@@ -320,7 +388,11 @@ def transform_to_anthropic_messages(
 
     stop = chat_request.get("stop")
     if isinstance(stop, str):
-        body["stop_sequences"] = [stop]
+        # Guarded the same way the list form is: an SDK defaulting `stop` to
+        # the empty string would otherwise send a stop sequence Anthropic
+        # refuses, and no Claude model would be reachable at all.
+        if stop:
+            body["stop_sequences"] = [stop]
     elif isinstance(stop, list) and stop:
         body["stop_sequences"] = stop
 
@@ -432,6 +504,15 @@ async def stream_anthropic_to_completions(
     next_tool_index = 0
     saw_tool_use = False
     finish_reason = "stop"
+    # A terminator is only earned. Anthropic ends a turn with `message_delta`
+    # carrying a stop reason and then `message_stop`; a stream that simply
+    # stops arriving — a dropped connection, an upstream that died — reaches
+    # the end of iteration exactly as a finished one does. Emitting the
+    # success chunk and `[DONE]` regardless is how a tool call truncated
+    # mid-arguments is handed to the caller as a complete call with
+    # unparseable JSON, and a severed answer as the whole answer.
+    ended = False
+    failed: Optional[dict] = None
 
     async for line in response.aiter_lines():
         stripped = line.strip()
@@ -507,23 +588,37 @@ async def stream_anthropic_to_completions(
             stop_reason = (event.get("delta") or {}).get("stop_reason")
             if stop_reason:
                 finish_reason = _FINISH_FOR_STOP_REASON.get(stop_reason, "stop")
+                ended = True
             usage_delta = event.get("usage") or {}
             if usage_delta:
                 captured.update(usage_delta)
+
+        elif kind == "message_stop":
+            ended = True
 
         elif kind == "error":
             # The upstream failed mid-stream, after a 200 and after bytes have
             # already reached the caller. The status is spent, so the only
             # honest thing left is to pass its own words through in the shape
-            # an OpenAI client reads an error out of.
-            yield f"data: {json.dumps({'error': event.get('error') or {}})}\n\n"
+            # an OpenAI client reads an error out of — and then stop, rather
+            # than following it with a terminator that says the turn
+            # completed.
+            failed = event.get("error") or {"message": "upstream stream error"}
             break
-
-    if saw_tool_use and finish_reason == "stop":
-        finish_reason = "tool_calls"
 
     if usage_holder is not None:
         usage_holder.update(captured)
+
+    if failed is not None:
+        yield f"data: {json.dumps({'error': failed})}\n\n"
+        return
+
+    if not ended:
+        yield f"data: {json.dumps({'error': {'type': 'api_error', 'message': 'Upstream stream ended before the turn completed'}})}\n\n"
+        return
+
+    if saw_tool_use and finish_reason == "stop":
+        finish_reason = "tool_calls"
 
     yield chunk({}, finish_reason)
     yield "data: [DONE]\n\n"

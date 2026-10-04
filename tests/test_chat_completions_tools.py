@@ -193,4 +193,25 @@ async def test_a_streamed_tool_call_reassembles_from_its_argument_deltas():
         if "arguments" in call.get("function", {})
     )
     assert json.loads(arguments) == {"city": "Dallas"}
+    # Arguments without a name and a call id are an unusable tool call: the
+    # announcing chunk is what carries the call's identity, and the caller has
+    # nothing to execute or to key its result to without it.
+    announced = [
+        call
+        for chunk in chunks
+        for call in chunk["choices"][0]["delta"].get("tool_calls", [])
+        if call.get("id")
+    ]
+    assert [(c["id"], c["function"]["name"]) for c in announced] == [
+        ("call_xyz", "get_weather")
+    ]
     assert chunks[-1]["choices"][0]["finish_reason"] == "tool_calls"
+
+
+def test_a_provider_native_tool_is_passed_through_rather_than_dropped():
+    """The Responses API takes `web_search_preview` as it stands."""
+    native = {"type": "web_search_preview"}
+    out = _translate(tools=[native, WEATHER_TOOL])
+
+    assert native in out["tools"]
+    assert any(t.get("name") == "get_weather" for t in out["tools"])

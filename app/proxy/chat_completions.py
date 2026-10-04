@@ -39,6 +39,7 @@ from app.deployments import (
 )
 from app.proxy.anthropic import anthropic_upstream_headers, apply_oauth_system_prompt
 from app.proxy.chat_to_anthropic import (
+    UntranslatableRequest,
     stream_anthropic_to_completions,
     transform_anthropic_to_completions,
     transform_to_anthropic_messages,
@@ -69,6 +70,11 @@ def _responses_tools(tools: object) -> list[dict]:
         fn = tool.get("function") if isinstance(tool.get("function"), dict) else tool
         name = fn.get("name")
         if not name:
+            # A provider-native tool — `web_search_preview` and friends — has
+            # no function name, and the Responses API takes it as it stands.
+            # Dropping it would leave the model unable to do the one thing it
+            # was offered.
+            out.append(tool)
             continue
         declared: dict = {
             "type": "function",
@@ -95,8 +101,9 @@ def _responses_tool_choice(tool_choice: object) -> object | None:
     if isinstance(tool_choice, str):
         return tool_choice if tool_choice.lower() in ("auto", "required", "none") else None
     if isinstance(tool_choice, dict):
-        name = (tool_choice.get("function") or {}).get("name") or tool_choice.get("name")
-        if name:
+        fn = tool_choice.get("function")
+        name = (fn.get("name") if isinstance(fn, dict) else fn) or tool_choice.get("name")
+        if isinstance(name, str) and name:
             return {"type": "function", "name": name}
     return None
 
@@ -536,6 +543,22 @@ async def _handle_completions(
             principal=principal, request=request, started_at=started_at,
         )
 
+    except UntranslatableRequest as exc:
+        log(f"[Chat API] Refusing untranslatable request for {target.name}: {exc}")
+        usage.schedule(
+            principal, request=request, model=target.name, endpoint=ENDPOINT_LABEL,
+            status_code=400, error_type="untranslatable_request",
+            started_at=started_at,
+        )
+        return JSONResponse(
+            status_code=400,
+            content={
+                "error": {
+                    "message": f"Cannot translate this request for {target.name!r}: {exc}",
+                    "type": "invalid_request_error",
+                }
+            },
+        )
     except httpx.ConnectError as exc:
         log(f"[Chat API] Returning 502 to client after connect failure: {exc!r}")
         usage.schedule(
@@ -699,7 +722,19 @@ async def _post_via_anthropic_translation(
         )
         return _upstream_error_response(response.status_code, response.content)
 
-    result = response.json()
+    try:
+        result = response.json()
+    except ValueError:
+        # A 200 whose body is not JSON is a reverse proxy's interstitial, not
+        # a reply. Reported as a 500 it reads as a defect in this proxy; its
+        # own bytes at its own status are what the operator can act on.
+        log(f"Upstream 200 carried non-JSON: {response.text[:500]}")
+        usage.schedule(
+            principal, request=request, model=target.name, endpoint=ENDPOINT_LABEL,
+            status_code=502, error_type="upstream_non_json", started_at=started_at,
+        )
+        return _upstream_error_response(502, response.content)
+
     log(f"Response received: {len(response.content)} bytes")
     usage.schedule(
         principal, request=request, model=target.name, endpoint=ENDPOINT_LABEL,
