@@ -61,16 +61,31 @@ def _extract_api_key_from_anthropic_headers(
     return authorization
 
 
-def _forward_headers(request: Request, target: DeploymentTarget) -> dict:
-    """Build the headers for the upstream call.
+def anthropic_upstream_headers(target: DeploymentTarget) -> dict:
+    """The headers any Anthropic Messages upstream call needs, client aside.
 
     Auth is per-deployment (`target.auth_scheme`) — Foundry's
     `/anthropic/v1/messages` route authenticates with `Authorization: Bearer
     <key>`, real `api.anthropic.com` wants `x-api-key: <key>` instead. Either
-    way the standard Anthropic `anthropic-version` header is required. Claude
-    Code may send Anthropic beta flags that Foundry's partner route does not
-    recognize, so do not forward `anthropic-beta` there — real Anthropic does
-    recognize them, so let those through unfiltered.
+    way the standard Anthropic `anthropic-version` header is required.
+
+    Separate from `_forward_headers` because the chat-completions translation
+    reaches this wire with no Anthropic client headers to forward at all —
+    its caller speaks OpenAI and sends none.
+    """
+    headers = build_upstream_headers(target)
+    headers["anthropic-version"] = "2023-06-01"
+    if target.is_anthropic_oauth:
+        headers["anthropic-beta"] = OAUTH_BETA_FLAG
+    return headers
+
+
+def _forward_headers(request: Request, target: DeploymentTarget) -> dict:
+    """`anthropic_upstream_headers`, plus the client's own `anthropic-*`.
+
+    Claude Code may send Anthropic beta flags that Foundry's partner route
+    does not recognize, so do not forward `anthropic-beta` there — real
+    Anthropic does recognize them, so let those through unfiltered.
     """
     headers = build_upstream_headers(target)
     headers["anthropic-version"] = "2023-06-01"

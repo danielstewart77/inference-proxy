@@ -122,12 +122,13 @@ def test_the_listing_is_not_public(client, monkeypatch):
 def test_a_dsh_caller_is_offered_the_models_it_can_actually_send_to(client):
     """A dsh mind speaks chat completions, so that is what its picker gets.
 
-    The two exclusions are the whole point: a model reachable only on the
-    Anthropic wire is one dsh cannot address, and a model withheld from
-    everyone but claude is one it may not see.
+    A model reachable only on the Anthropic wire is offered, because the chat
+    route translates onto that wire — so dsh can address it after all. The
+    exclusion that remains is the withholding one: a model granted to claude
+    alone is still one dsh may not see.
     """
     offered = _names(client.get("/v1/models?harness=dsh"))
 
     assert "everyones" in offered
-    assert "messages-wire-only" not in offered
+    assert "messages-wire-only" in offered
     assert "claude-only" not in offered

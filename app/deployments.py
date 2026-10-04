@@ -195,6 +195,28 @@ HARNESS_WIRES = {
 }
 
 
+def offerable_to(row: Model, wire: str, harness: str) -> bool:
+    """Whether `harness` should be *offered* this model on this shape.
+
+    Separate from "can it be reached on this shape", which `wires_for`
+    answers about the model alone. The chat route reaches a Claude
+    deployment by translating onto the Anthropic wire, which is what lets a
+    chat-completions-only caller address one at all — but Codex picks one
+    endpoint per model and picks the Responses API, so a Claude model listed
+    for it would be shown in its picker and then sent to an endpoint that
+    refuses it. Offering it is the lie; the translation is not.
+
+    Narrow by construction: only the Anthropic stand-in is withheld, and only
+    from Codex. A native chat upstream, which nothing translates, is offered
+    exactly as it was before this stand-in existed.
+    """
+    if wire != "chat_completions" or harness != "codex":
+        return True
+    uri = resolve_target_uri(row, wire)
+    probe = DeploymentTarget(name="", target_uri=uri or "", api_key="", api_version=None)
+    return not probe.is_anthropic_messages
+
+
 def wires_for(row: Model) -> list[str]:
     """Every request shape this model can actually be reached on.
 
@@ -228,7 +250,11 @@ def uri_serves(target_uri: Optional[str], wire: str) -> bool:
     if wire == "openai_responses":
         return probe.is_openai_responses
     if wire == "chat_completions":
-        return probe.is_openai_responses or probe.is_native_chat_completions
+        return (
+            probe.is_openai_responses
+            or probe.is_native_chat_completions
+            or probe.is_anthropic_messages
+        )
     return False
 
 
@@ -256,11 +282,13 @@ def resolve_target_uri(row: Model, wire: Optional[str]) -> Optional[str]:
 
     path = provider.path_for(wire) if wire else None
     if path is None and wire is not None:
-        # `chat_completions` is the one shape with a stand-in: the Responses
-        # API answers it after translation, which is what the chat route
-        # already does for the Codex backend.
+        # `chat_completions` is the one shape with stand-ins: both the
+        # Responses API and Anthropic Messages answer it after translation,
+        # which is what the chat route does. Responses first, because that
+        # translation is the older and cheaper of the two — a provider
+        # serving both shapes should not take the Anthropic detour.
         if wire == "chat_completions":
-            path = provider.responses_path
+            path = provider.responses_path or provider.messages_path
         if path is None:
             return None
     if path is None:
@@ -388,6 +416,7 @@ async def listing_for(
             wires = [
                 wire for wire in wires
                 if row.visible_to(HARNESS_FOR_WIRE.get(wire, harness))
+                and offerable_to(row, wire, harness)
             ]
         if not wires:
             continue
@@ -422,7 +451,8 @@ def reject_wrong_protocol(
     """Guard against using a deployment on the wrong client route.
 
     `expected` is one of: 'anthropic_messages', 'openai_responses',
-    'chat_completions_any' (chat route accepts both responses and native chat).
+    'chat_completions_any' — the chat route accepts all three upstream
+    shapes, because it translates onto the two that are not its own.
     """
     if expected == "anthropic_messages":
         if not target.is_anthropic_messages:
@@ -437,7 +467,11 @@ def reject_wrong_protocol(
                 f"Deployment {target.name!r} is not an Azure OpenAI Responses endpoint",
             )
     elif expected == "chat_completions_any":
-        if not (target.is_openai_responses or target.is_native_chat_completions):
+        if not (
+            target.is_openai_responses
+            or target.is_native_chat_completions
+            or target.is_anthropic_messages
+        ):
             _raise(
                 error_kind, 400,
                 f"Deployment {target.name!r} is not a Chat Completions-compatible endpoint",
