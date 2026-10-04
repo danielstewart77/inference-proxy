@@ -452,8 +452,12 @@ def transform_anthropic_to_completions(payload: dict, model: str) -> dict:
     message: dict = {"role": "assistant", "content": "".join(text_parts) or None}
     if tool_calls:
         message["tool_calls"] = tool_calls
-    if thinking_parts:
-        message["reasoning_content"] = "".join(thinking_parts)
+    reasoning = "".join(thinking_parts)
+    if reasoning:
+        # Anthropic routinely returns a thinking block whose text is empty or
+        # redacted. Surfacing the key anyway tells the caller there is
+        # reasoning to read when there is not.
+        message["reasoning_content"] = reasoning
 
     stop_reason = payload.get("stop_reason")
     finish_reason = _FINISH_FOR_STOP_REASON.get(stop_reason or "", "stop")

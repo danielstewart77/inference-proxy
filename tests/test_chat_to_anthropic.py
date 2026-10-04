@@ -623,6 +623,37 @@ async def test_a_streamed_tool_call_is_numbered_among_tool_calls_not_blocks():
     )
 
 
+def test_an_empty_thinking_block_is_not_offered_as_reasoning_to_read():
+    """Anthropic routinely returns one; a live call against Opus 5 did."""
+    out = transform_anthropic_to_completions(
+        {
+            "content": [
+                {"type": "thinking", "thinking": ""},
+                {"type": "text", "text": "391"},
+            ],
+            "stop_reason": "end_turn",
+        },
+        "claude-opus-5",
+    )
+
+    assert "reasoning_content" not in out["choices"][0]["message"]
+
+
+def test_thinking_that_has_text_is_handed_to_the_caller():
+    out = transform_anthropic_to_completions(
+        {
+            "content": [
+                {"type": "thinking", "thinking": "17*20 then 17*3"},
+                {"type": "text", "text": "391"},
+            ],
+            "stop_reason": "end_turn",
+        },
+        "claude-opus-5",
+    )
+
+    assert out["choices"][0]["message"]["reasoning_content"] == "17*20 then 17*3"
+
+
 def test_a_refused_generation_is_not_reported_as_a_finished_one():
     """`stop` on a refusal is an empty successful answer the caller won't retry."""
     out = transform_anthropic_to_completions(
