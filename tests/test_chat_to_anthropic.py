@@ -21,6 +21,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from app.db import get_session
 from app.deployments import (
     DeploymentTarget,
+    offerable_to,
     reject_wrong_protocol,
     resolve_target_uri,
     wires_for,
@@ -75,6 +76,36 @@ def test_a_messages_only_model_lists_chat_completions_among_its_wires():
     row.provider = None
 
     assert "chat_completions" in wires_for(row)
+
+
+def test_a_claude_model_is_not_offered_to_a_codex_picker():
+    """Codex picks the Responses endpoint, so offering it one is the lie."""
+    row = Model(deployment_name="claude-opus-5")
+    row.provider = _messages_only_provider()
+    row.provider.enabled = True
+
+    assert offerable_to(row, "chat_completions", "codex") is False
+    assert offerable_to(row, "chat_completions", "dsh") is True
+
+
+def test_a_native_chat_model_is_still_offered_to_a_codex_picker():
+    """The withholding is the Anthropic stand-in alone, not the whole shape.
+
+    A Foundry Models-as-a-Service row — DeepSeek, Kimi, gpt-oss — is reached
+    by forwarding the body unchanged. Nothing translates, so nothing about
+    what Codex is offered there may change.
+    """
+    row = Model(deployment_name="deepseek-v3")
+    provider = Provider(
+        name="foundry",
+        label="Foundry",
+        base_url="https://foundry.test",
+        chat_completions_path="/models/chat/completions",
+    )
+    provider.enabled = True
+    row.provider = provider
+
+    assert offerable_to(row, "chat_completions", "codex") is True
 
 
 def test_the_chat_route_accepts_an_anthropic_messages_deployment():
@@ -388,15 +419,78 @@ def test_max_tokens_is_always_present_and_honours_the_caller():
 )
 def test_a_reasoning_effort_becomes_a_thinking_budget(effort, budget):
     """Requirement 6 — an effort is translated, never dropped."""
-    out = _translate(reasoning_effort=effort, max_tokens=256)
+    out = _translate(reasoning_effort=effort)
 
     assert out["thinking"] == {"type": "enabled", "budget_tokens": budget}
     # Anthropic's floor is 1024, and a budget below it is refused outright.
     assert budget >= 1024
     # `max_tokens` has to *exceed* the budget or the request is refused, so
-    # the ceiling rises to leave room for a reply behind the thinking.
-    assert out["max_tokens"] > budget
-    assert out["max_tokens"] == budget + 4096
+    # with no ceiling named it rises to leave room for a reply behind the
+    # thinking rather than a reply of nothing.
+    assert out["max_tokens"] - budget >= 4096
+
+
+def test_a_named_ceiling_is_not_raised_to_fit_a_thinking_budget():
+    """A cap named for cost must not be overruled many times over, silently."""
+    out = _translate(reasoning_effort="xhigh", max_tokens=12000)
+
+    assert out["max_tokens"] == 12000
+    assert out["thinking"] == {"type": "enabled", "budget_tokens": 12000 - 4096}
+
+
+def test_an_effort_that_cannot_fit_under_the_ceiling_is_dropped_not_the_ceiling():
+    """Anthropic's floor is 1024; below that there is no budget to send."""
+    out = _translate(reasoning_effort="high", max_tokens=256)
+
+    assert out["max_tokens"] == 256
+    assert "thinking" not in out
+    # Dropping the effort is what lets the sampling parameters stay, too.
+    assert _translate(reasoning_effort="high", max_tokens=256, temperature=0.2)[
+        "temperature"
+    ] == 0.2
+
+
+def test_a_signed_thinking_block_survives_the_round_trip():
+    """Requirement 3 and 6 together — Anthropic refuses the follow-up without it.
+
+    A tool conversation with thinking enabled has to hand the signed blocks
+    back on the assistant turn that carries the `tool_use`. Discarded, the
+    conversation is one turn long by construction.
+    """
+    reply = transform_anthropic_to_completions(
+        {
+            "id": "msg_1",
+            "stop_reason": "tool_use",
+            "content": [
+                {"type": "thinking", "thinking": "needs the tool", "signature": "SIGBYTES"},
+                {
+                    "type": "tool_use",
+                    "id": "toolu_1",
+                    "name": "get_weather",
+                    "input": {"city": "Dallas"},
+                },
+            ],
+        },
+        "claude-opus-5",
+    )
+    assistant = reply["choices"][0]["message"]
+    assert assistant["reasoning_details"][0]["signature"] == "SIGBYTES"
+
+    out = _translate(
+        messages=[
+            {"role": "user", "content": "weather?"},
+            assistant,
+            {"role": "tool", "tool_call_id": "toolu_1", "content": "88F"},
+        ]
+    )
+
+    blocks = out["messages"][1]["content"]
+    assert blocks[0] == {
+        "type": "thinking",
+        "thinking": "needs the tool",
+        "signature": "SIGBYTES",
+    }
+    assert blocks[-1]["type"] == "tool_use"
 
 
 def test_the_nested_reasoning_form_is_read_too(effort="high"):
@@ -1085,3 +1179,40 @@ def test_a_success_carrying_no_json_is_not_reported_as_our_own_failure(
 
     assert response.status_code == 502
     assert "checking your browser" in response.json()["error"]["message"]
+
+
+@pytest.mark.asyncio
+async def test_a_turn_that_failed_after_a_200_is_not_metered_as_a_success():
+    """Metered 200 the failure is invisible — the usage row says it was served."""
+    outcome: dict = {}
+    lines = _sse(
+        [
+            {"type": "error", "error": {"type": "overloaded_error", "message": "Overloaded"}}
+        ]
+    )
+    async for _ in stream_anthropic_to_completions(
+        _FakeStream(lines), "claude-opus-5", outcome=outcome
+    ):
+        pass
+
+    assert outcome["error_type"] == "overloaded_error"
+
+    truncated: dict = {}
+    async for _ in stream_anthropic_to_completions(
+        _FakeStream(
+            _sse(
+                [
+                    {
+                        "type": "content_block_delta",
+                        "index": 0,
+                        "delta": {"type": "text_delta", "text": "half"},
+                    }
+                ]
+            )
+        ),
+        "claude-opus-5",
+        outcome=truncated,
+    ):
+        pass
+
+    assert truncated["error_type"] == "upstream_stream_truncated"

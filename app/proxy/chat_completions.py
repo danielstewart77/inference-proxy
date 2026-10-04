@@ -108,6 +108,43 @@ def _responses_tool_choice(tool_choice: object) -> object | None:
     return None
 
 
+def _responses_content(content: object, *, role: str) -> object:
+    """A Chat Completions `content` in the Responses API's own spelling.
+
+    The Responses API reads `input_text` and `input_image` — `input_image`
+    taking its url as a plain string, not an object — and refuses the chat
+    spellings. A part list forwarded unconverted therefore 400s on every
+    Responses-backed model the moment a caller attaches an image, which is
+    requirement 4 on this endpoint's other target wire.
+    """
+    if not isinstance(content, list):
+        return content
+    text_type = "output_text" if role == "assistant" else "input_text"
+    out: list[dict] = []
+    for part in content:
+        if isinstance(part, str):
+            out.append({"type": text_type, "text": part})
+            continue
+        if not isinstance(part, dict):
+            continue
+        kind = part.get("type")
+        if kind in ("text", "input_text", "output_text"):
+            out.append({"type": text_type, "text": part.get("text") or ""})
+        elif kind in ("image_url", "image", "input_image"):
+            url = part.get("image_url") or part.get("url")
+            if isinstance(url, dict):
+                url = url.get("url")
+            if isinstance(url, str) and url:
+                out.append({"type": "input_image", "image_url": url})
+            else:
+                raise UntranslatableRequest("an image part carries no url")
+        else:
+            raise UntranslatableRequest(
+                f"a content part of type {kind!r} has no Responses API equivalent"
+            )
+    return out
+
+
 def _responses_input_items(messages: list) -> list[dict]:
     """Non-system Chat Completions messages as Responses API input items.
 
@@ -141,7 +178,12 @@ def _responses_input_items(messages: list) -> list[dict]:
         if role == "assistant" and msg.get("tool_calls"):
             content = msg.get("content")
             if content:
-                items.append({"role": "assistant", "content": content})
+                items.append(
+                    {
+                        "role": "assistant",
+                        "content": _responses_content(content, role="assistant"),
+                    }
+                )
             for call in msg["tool_calls"]:
                 if not isinstance(call, dict):
                     continue
@@ -159,6 +201,8 @@ def _responses_input_items(messages: list) -> list[dict]:
                 )
             continue
 
+        if isinstance(msg.get("content"), list):
+            msg = {**msg, "content": _responses_content(msg["content"], role=role or "user")}
         items.append(msg)
     return items
 
@@ -773,18 +817,22 @@ async def _stream_via_anthropic_translation(
         return _upstream_error_response(response.status_code, error_body)
 
     captured: dict = {}
+    outcome: dict = {}
 
     async def generate():
         try:
             async for chunk in stream_anthropic_to_completions(
-                response, target.name, usage_holder=captured
+                response, target.name, usage_holder=captured, outcome=outcome
             ):
                 yield chunk
         finally:
             await response.aclose()
+            error_type = outcome.get("error_type")
             usage.schedule(
                 principal, request=request, model=target.name, endpoint=ENDPOINT_LABEL,
-                status_code=200, started_at=started_at,
+                status_code=502 if error_type else 200,
+                error_type=error_type,
+                started_at=started_at,
                 azure_usage=_anthropic_usage_to_azure_usage(captured),
             )
 

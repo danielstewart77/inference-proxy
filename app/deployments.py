@@ -184,12 +184,7 @@ ALL_WIRES = ("anthropic_messages", "openai_responses", "chat_completions")
 #: endpoint per shape.
 HARNESS_WIRES = {
     "claude": ("anthropic_messages",),
-    # Codex speaks the Responses API and nothing else. Listing it for chat
-    # completions as well cost nothing while every chat-capable upstream was
-    # also responses-capable, but the chat route now translates onto the
-    # Anthropic wire — so that extra shape would offer a Codex picker every
-    # Claude model and then refuse each one at request time.
-    "codex": ("openai_responses",),
+    "codex": ("openai_responses", "chat_completions"),
     # dsh reaches a model through its hive profile's `llm-pi-ai` provider
     # route, declared `api: openai-completions` — chat completions and nothing
     # else. Without a row here its picker is offered nothing at all, which
@@ -198,6 +193,28 @@ HARNESS_WIRES = {
     "dsh": ("chat_completions",),
     "hermes": ALL_WIRES,
 }
+
+
+def offerable_to(row: Model, wire: str, harness: str) -> bool:
+    """Whether `harness` should be *offered* this model on this shape.
+
+    Separate from "can it be reached on this shape", which `wires_for`
+    answers about the model alone. The chat route reaches a Claude
+    deployment by translating onto the Anthropic wire, which is what lets a
+    chat-completions-only caller address one at all — but Codex picks one
+    endpoint per model and picks the Responses API, so a Claude model listed
+    for it would be shown in its picker and then sent to an endpoint that
+    refuses it. Offering it is the lie; the translation is not.
+
+    Narrow by construction: only the Anthropic stand-in is withheld, and only
+    from Codex. A native chat upstream, which nothing translates, is offered
+    exactly as it was before this stand-in existed.
+    """
+    if wire != "chat_completions" or harness != "codex":
+        return True
+    uri = resolve_target_uri(row, wire)
+    probe = DeploymentTarget(name="", target_uri=uri or "", api_key="", api_version=None)
+    return not probe.is_anthropic_messages
 
 
 def wires_for(row: Model) -> list[str]:
@@ -399,6 +416,7 @@ async def listing_for(
             wires = [
                 wire for wire in wires
                 if row.visible_to(HARNESS_FOR_WIRE.get(wire, harness))
+                and offerable_to(row, wire, harness)
             ]
         if not wires:
             continue

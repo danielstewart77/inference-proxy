@@ -15,6 +15,7 @@ import json
 import pytest
 
 from app.proxy.chat_completions import (
+    UntranslatableRequest,
     stream_responses_to_completions,
     transform_response_to_completions,
     transform_to_responses_format,
@@ -215,3 +216,56 @@ def test_a_provider_native_tool_is_passed_through_rather_than_dropped():
 
     assert native in out["tools"]
     assert any(t.get("name") == "get_weather" for t in out["tools"])
+
+
+def test_content_parts_arrive_in_the_responses_apis_own_spelling():
+    """Requirement 4 on this endpoint's other target wire.
+
+    The Responses API reads `input_text` and `input_image`, the latter taking
+    its url as a plain string. The chat spellings are refused, so a caller
+    attaching an image 400s on every Responses-backed model.
+    """
+    out = _translate(
+        messages=[
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "what is this?"},
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": "data:image/png;base64,QUJD"},
+                    },
+                ],
+            }
+        ]
+    )
+
+    assert out["input"][0]["content"] == [
+        {"type": "input_text", "text": "what is this?"},
+        {"type": "input_image", "image_url": "data:image/png;base64,QUJD"},
+    ]
+
+
+def test_an_assistant_turn_uses_the_output_text_spelling():
+    out = _translate(
+        messages=[
+            {"role": "user", "content": "hi"},
+            {
+                "role": "assistant",
+                "content": [{"type": "text", "text": "hello"}],
+                "tool_calls": [{"id": "c", "function": {"name": "f", "arguments": "{}"}}],
+            },
+        ]
+    )
+
+    assert out["input"][1]["content"] == [{"type": "output_text", "text": "hello"}]
+
+
+def test_an_attachment_this_wire_cannot_carry_is_refused_not_forwarded():
+    """Forwarded as-is it is an upstream 400 naming a field nobody sent."""
+    with pytest.raises(UntranslatableRequest):
+        _translate(
+            messages=[
+                {"role": "user", "content": [{"type": "file", "file": {"file_id": "f"}}]}
+            ]
+        )

@@ -57,8 +57,12 @@ THINKING_BUDGETS = {
 }
 
 #: `max_tokens` has to exceed `budget_tokens` or the request is refused, so a
-#: thinking budget raises the ceiling to leave room for a reply behind it.
+#: thinking budget needs room for a reply behind it.
 THINKING_HEADROOM = 4096
+
+#: Anthropic's own floor. A budget under this is refused, so an effort that
+#: cannot be fitted beneath the caller's own ceiling is not sent at all.
+MIN_THINKING_BUDGET = 1024
 
 _FINISH_FOR_STOP_REASON = {
     "end_turn": "stop",
@@ -222,6 +226,18 @@ def _tool_use_blocks(tool_calls: object) -> list[dict]:
     return blocks
 
 
+def _reasoning_blocks(details: object) -> list[dict]:
+    """Thinking blocks handed back by a caller replaying an assistant turn."""
+    if not isinstance(details, list):
+        return []
+    return [
+        block
+        for block in details
+        if isinstance(block, dict)
+        and block.get("type") in ("thinking", "redacted_thinking")
+    ]
+
+
 def _tool_result_block(message: dict) -> dict:
     return {
         "type": "tool_result",
@@ -341,7 +357,16 @@ def transform_to_anthropic_messages(
             continue
 
         if role == "assistant":
-            blocks = _content_blocks(message.get("content"))
+            # Anthropic requires the signed thinking blocks back on an
+            # assistant turn that carries `tool_use` while thinking is
+            # enabled, and refuses the follow-up without them. The signature
+            # is opaque bytes with no Chat Completions field of its own, so
+            # the whole block list rides out and back under
+            # `reasoning_details` — otherwise "reasoning effort plus tools"
+            # is a one-turn conversation by construction, and the caller is
+            # not even handed the bytes it would need to fix it.
+            blocks = _reasoning_blocks(message.get("reasoning_details"))
+            blocks.extend(_content_blocks(message.get("content")))
             blocks.extend(_tool_use_blocks(message.get("tool_calls")))
             if blocks:
                 messages.append({"role": "assistant", "content": blocks})
@@ -351,16 +376,14 @@ def transform_to_anthropic_messages(
         if blocks:
             messages.append({"role": "user", "content": blocks})
 
-    max_tokens = (
-        chat_request.get("max_tokens")
-        or chat_request.get("max_completion_tokens")
-        or DEFAULT_MAX_TOKENS
+    ceiling = chat_request.get("max_tokens") or chat_request.get(
+        "max_completion_tokens"
     )
 
     body: dict = {
         "model": model,
         "messages": messages,
-        "max_tokens": max_tokens,
+        "max_tokens": ceiling or DEFAULT_MAX_TOKENS,
         "stream": streaming,
     }
     if system_text:
@@ -372,15 +395,29 @@ def transform_to_anthropic_messages(
         if isinstance(reasoning, dict):
             thinking = _thinking_for(reasoning.get("effort"))
     if thinking:
-        body["thinking"] = thinking
-        needed = thinking["budget_tokens"] + THINKING_HEADROOM
-        if body["max_tokens"] < needed:
-            body["max_tokens"] = needed
-        # Extended thinking fixes the sampling parameters; sending either
-        # alongside it is a 400.
-        chat_request = {
-            k: v for k, v in chat_request.items() if k not in ("temperature", "top_p")
-        }
+        budget = thinking["budget_tokens"]
+        if ceiling:
+            # A caller that named its own ceiling named it for a reason — a
+            # cost cap, or a buffer downstream. Raising it to fit a thinking
+            # budget it never asked for spends many times what it authorised,
+            # silently. So the budget is fitted under the ceiling instead, and
+            # where it cannot reach Anthropic's floor the effort is dropped
+            # rather than the ceiling.
+            budget = min(budget, ceiling - THINKING_HEADROOM)
+            if budget < MIN_THINKING_BUDGET:
+                budget = 0
+        else:
+            body["max_tokens"] = max(body["max_tokens"], budget + THINKING_HEADROOM)
+        if budget:
+            body["thinking"] = {"type": "enabled", "budget_tokens": budget}
+            # Extended thinking fixes the sampling parameters; sending either
+            # alongside it is a 400. Only when thinking survived, though — a
+            # dropped effort must not take the caller's temperature with it.
+            chat_request = {
+                k: v
+                for k, v in chat_request.items()
+                if k not in ("temperature", "top_p")
+            }
 
     for src, dst in (("temperature", "temperature"), ("top_p", "top_p")):
         if src in chat_request:
@@ -427,6 +464,7 @@ def transform_anthropic_to_completions(payload: dict, model: str) -> dict:
     """Anthropic Messages response body -> Chat Completions response body."""
     text_parts: list[str] = []
     thinking_parts: list[str] = []
+    thinking_blocks: list[dict] = []
     tool_calls: list[dict] = []
 
     for block in payload.get("content") or []:
@@ -435,8 +473,9 @@ def transform_anthropic_to_completions(payload: dict, model: str) -> dict:
         kind = block.get("type")
         if kind == "text":
             text_parts.append(block.get("text", ""))
-        elif kind == "thinking":
-            thinking_parts.append(block.get("thinking", ""))
+        elif kind in ("thinking", "redacted_thinking"):
+            thinking_blocks.append(block)
+            thinking_parts.append(block.get("thinking") or "")
         elif kind == "tool_use":
             tool_calls.append(
                 {
@@ -452,6 +491,10 @@ def transform_anthropic_to_completions(payload: dict, model: str) -> dict:
     message: dict = {"role": "assistant", "content": "".join(text_parts) or None}
     if tool_calls:
         message["tool_calls"] = tool_calls
+    if thinking_blocks:
+        # Verbatim, signatures included: this is what the next turn has to
+        # hand back for Anthropic to accept it.
+        message["reasoning_details"] = thinking_blocks
     reasoning = "".join(thinking_parts)
     if reasoning:
         # Anthropic routinely returns a thinking block whose text is empty or
@@ -464,8 +507,9 @@ def transform_anthropic_to_completions(payload: dict, model: str) -> dict:
     if tool_calls and stop_reason in (None, "tool_use"):
         finish_reason = "tool_calls"
 
+    upstream_id = payload.get("id")
     return {
-        "id": payload.get("id") or f"chatcmpl-{uuid.uuid4().hex[:29]}",
+        "id": f"chatcmpl-{upstream_id}" if upstream_id else f"chatcmpl-{uuid.uuid4().hex[:29]}",
         "object": "chat.completion",
         "created": int(time.time()),
         "model": model,
@@ -477,7 +521,11 @@ def transform_anthropic_to_completions(payload: dict, model: str) -> dict:
 
 
 async def stream_anthropic_to_completions(
-    response: httpx.Response, model: str, *, usage_holder: Optional[dict] = None
+    response: httpx.Response,
+    model: str,
+    *,
+    usage_holder: Optional[dict] = None,
+    outcome: Optional[dict] = None,
 ) -> AsyncIterator[str]:
     """Anthropic's block-oriented event stream as Chat Completions chunks.
 
@@ -613,11 +661,18 @@ async def stream_anthropic_to_completions(
     if usage_holder is not None:
         usage_holder.update(captured)
 
+    # A turn that failed after a 200 is still a failure. Metered as a success
+    # it is invisible: the usage row says the request was served, and the only
+    # evidence is a chunk the operator never sees.
     if failed is not None:
+        if outcome is not None:
+            outcome["error_type"] = failed.get("type") or "upstream_stream_error"
         yield f"data: {json.dumps({'error': failed})}\n\n"
         return
 
     if not ended:
+        if outcome is not None:
+            outcome["error_type"] = "upstream_stream_truncated"
         yield f"data: {json.dumps({'error': {'type': 'api_error', 'message': 'Upstream stream ended before the turn completed'}})}\n\n"
         return
 
