@@ -132,18 +132,38 @@ def build_upstream_headers(target: DeploymentTarget) -> dict[str, str]:
 
 
 def _raise(error_kind: str, status: int, message: str) -> None:
+    """Refuse in the shape the caller's own SDK can read.
+
+    A bare ``detail`` string is invisible to an OpenAI-compatible client: the
+    openai SDK builds its error message from ``body["error"]["message"]`` and
+    renders a body it cannot find as ``404 status code (no body)``. So the
+    sentence naming the model never reaches the harness that asked, and an
+    operator reading "404" has nothing to act on. Both wires therefore get
+    their own envelope, and ``detail`` keeps the message for anything reading
+    this as plain FastAPI.
+    """
+    error_type = "invalid_request_error" if status < 500 else "api_error"
     if error_kind == "anthropic":
         raise HTTPException(
             status_code=status,
             detail={
                 "type": "error",
-                "error": {
-                    "type": "invalid_request_error" if status < 500 else "api_error",
-                    "message": message,
-                },
+                "error": {"type": error_type, "message": message},
             },
         )
-    raise HTTPException(status_code=status, detail=message)
+    raise HTTPException(
+        status_code=status,
+        detail={
+            "error": {
+                "message": message,
+                "type": error_type,
+                "code": status,
+            },
+            # Kept beside the envelope: callers and dashboards that already
+            # read `detail` as a string see the same sentence, not a dict.
+            "detail": message,
+        },
+    )
 
 
 #: Which harness speaks each request shape. The endpoint a request arrives on
@@ -266,8 +286,8 @@ async def resolve_deployment(
     """Look up a deployment by name; return a fully-populated target.
 
     Raises HTTPException on missing/unknown/disabled/incomplete rows. The
-    `error_kind` selects the response shape — `'openai'` (raw detail string)
-    or `'anthropic'` (Anthropic-shaped error envelope).
+    `error_kind` selects the response shape — `'openai'` or `'anthropic'`,
+    each the envelope that wire's own SDK reads a message out of.
 
     `is_admin` gates admin-only models. It defaults to False so any caller that
     forgets to pass it fails closed (over-restricts) rather than leaking. An
