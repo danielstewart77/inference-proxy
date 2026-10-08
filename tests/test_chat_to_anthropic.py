@@ -832,8 +832,13 @@ async def test_a_failure_mid_stream_is_not_followed_by_a_success_terminator():
 
 
 @pytest.mark.asyncio
-async def test_a_streamed_turn_reports_its_token_counts_to_the_caller():
-    """The holder is the only channel by which a streamed turn gets metered."""
+async def test_a_streamed_turn_reports_its_token_counts_for_metering():
+    """The holder is the channel by which a streamed turn gets metered.
+
+    Named for what it guards: this is the proxy's own usage_log row, not
+    anything the caller receives. The caller's copy is guarded by
+    `test_a_streamed_turn_hands_the_caller_its_token_counts`.
+    """
     captured: dict = {}
     lines = _sse(
         [
@@ -1216,3 +1221,384 @@ async def test_a_turn_that_failed_after_a_200_is_not_metered_as_a_success():
         pass
 
     assert truncated["error_type"] == "upstream_stream_truncated"
+
+
+# ---------- Streamed turns report their token counts to the caller ----------
+#
+# Cypher reaches this proxy as `api: openai-completions`, so her turns run
+# through this converter. Before this section existed she recorded zero tokens
+# for turns the proxy's own usage_log recorded in full, and her rotation hook
+# could never measure context.
+
+
+@pytest.mark.asyncio
+async def test_a_streamed_turn_hands_the_caller_its_token_counts():
+    """The counts reach the caller, not just the metering holder."""
+    lines = _sse(
+        [
+            {"type": "message_start", "message": {"usage": {"input_tokens": 16271}}},
+            {
+                "type": "message_delta",
+                "delta": {"stop_reason": "end_turn"},
+                "usage": {"output_tokens": 127},
+            },
+        ]
+    )
+
+    chunks = await _collect(lines)
+    carrying = [c for c in chunks if "usage" in c]
+
+    assert carrying, "no chunk carried usage"
+    usage = carrying[-1]["usage"]
+    assert usage["prompt_tokens"] == 16271
+    assert usage["completion_tokens"] == 127
+    assert usage["total_tokens"] == 16271 + 127
+
+
+@pytest.mark.asyncio
+async def test_a_cached_turn_reports_a_prompt_total_the_caller_can_subtract_from():
+    """`prompt_tokens` is inclusive, as every OpenAI consumer reads it.
+
+    Anthropic's `input_tokens` excludes the cached prefix; OpenAI's
+    `prompt_tokens` includes it, with the cached portion named as a subset.
+    pi-ai recovers fresh input as `prompt_tokens - cached - cache_write`, so an
+    exclusive total drives its answer to zero on a cache-heavy turn and loses
+    the created prefix entirely.
+    """
+    fresh, read, created = 300, 15971, 4096
+    lines = _sse(
+        [
+            {
+                "type": "message_start",
+                "message": {
+                    "usage": {
+                        "input_tokens": fresh,
+                        "cache_read_input_tokens": read,
+                        "cache_creation_input_tokens": created,
+                    }
+                },
+            },
+            {
+                "type": "message_delta",
+                "delta": {"stop_reason": "end_turn"},
+                "usage": {"output_tokens": 11},
+            },
+        ]
+    )
+
+    usage = [c for c in await _collect(lines) if "usage" in c][-1]["usage"]
+    details = usage["prompt_tokens_details"]
+
+    assert usage["prompt_tokens"] == fresh + read + created
+    assert details["cached_tokens"] == read
+    assert details["cache_write_tokens"] == created
+    # The consumer recovers fresh input as prompt - cached - written; that it
+    # comes out to `fresh` follows from the three assertions above, so there is
+    # nothing left for a fourth to detect.
+
+
+@pytest.mark.asyncio
+async def test_a_truncated_turn_still_reports_the_counts_it_reached():
+    """A partial count beats no count, and it has to precede the error line.
+
+    The OpenAI SDK raises on a `{"error": ...}` line and discards whatever
+    follows it, so usage emitted after one never reaches the caller.
+    """
+    lines = _sse(
+        [
+            {"type": "message_start", "message": {"usage": {"input_tokens": 16271}}},
+            {
+                "type": "content_block_delta",
+                "index": 0,
+                "delta": {"type": "text_delta", "text": "partial"},
+            },
+        ]
+    )
+
+    raw = [
+        line
+        async for line in stream_anthropic_to_completions(_FakeStream(lines), "claude-opus-5")
+    ]
+    payloads = [json.loads(l[len("data: ") :]) for l in raw if l.startswith("data: ") and l[6:].strip() != "[DONE]"]
+    usage_at = [i for i, p in enumerate(payloads) if "usage" in p]
+    error_at = [i for i, p in enumerate(payloads) if "error" in p]
+
+    assert usage_at, "a truncated turn carried no usage"
+    assert payloads[usage_at[-1]]["usage"]["prompt_tokens"] == 16271
+    assert error_at and usage_at[-1] < error_at[0], "usage must precede the error line"
+
+
+@pytest.mark.asyncio
+async def test_a_turn_whose_upstream_reported_nothing_carries_no_counts():
+    """Unmeasured is reported as unmeasured rather than as a measured zero.
+
+    `_usage_to_chat({})` yields a well-formed all-zero dict, and pi-ai
+    overwrites usage on every usage-bearing chunk, so a fabricated zero wipes a
+    real measurement. Cypher's hook reads an all-zero usage dict as absence and
+    walks further back, which hands her the previous turn's figure.
+    """
+    lines = _sse(
+        [
+            {
+                "type": "content_block_delta",
+                "index": 0,
+                "delta": {"type": "text_delta", "text": "hi"},
+            },
+            {"type": "message_delta", "delta": {"stop_reason": "end_turn"}},
+            {"type": "message_stop"},
+        ]
+    )
+
+    assert not [c for c in await _collect(lines) if "usage" in c]
+
+
+@pytest.mark.asyncio
+async def test_an_aborted_turn_still_records_what_it_had_for_metering():
+    """The metering row survives a transport failure mid-stream.
+
+    There is no `try` around the event loop, so an httpx error or a caller
+    hanging up skips everything after it. The live usage_log carries rows at
+    status 200 with NULL tokens from exactly this.
+    """
+
+    class _DyingStream:
+        async def aiter_lines(self):
+            for line in _sse(
+                [{"type": "message_start", "message": {"usage": {"input_tokens": 16271}}}]
+            ):
+                yield line
+            raise httpx.ReadError("upstream went away")
+
+    captured: dict = {}
+    with pytest.raises(httpx.ReadError):
+        async for _ in stream_anthropic_to_completions(
+            _DyingStream(), "claude-opus-5", usage_holder=captured
+        ):
+            pass
+
+    assert captured.get("input_tokens") == 16271
+
+
+@pytest.mark.asyncio
+async def test_a_later_usage_event_does_not_zero_an_earlier_count():
+    """A blind merge lets a zeroed `message_delta` overwrite a good count.
+
+    The metering row and the chunk would then agree perfectly on a wrong
+    number, which is the one disagreement nothing downstream could detect.
+    """
+    lines = _sse(
+        [
+            {
+                "type": "message_start",
+                "message": {
+                    "usage": {"input_tokens": 16271, "cache_read_input_tokens": 4096}
+                },
+            },
+            {
+                "type": "message_delta",
+                "delta": {"stop_reason": "end_turn"},
+                "usage": {
+                    "input_tokens": 0,
+                    "cache_read_input_tokens": 0,
+                    "output_tokens": 127,
+                },
+            },
+        ]
+    )
+
+    captured: dict = {}
+    async for _ in stream_anthropic_to_completions(
+        _FakeStream(lines), "claude-opus-5", usage_holder=captured
+    ):
+        pass
+
+    assert captured["input_tokens"] == 16271
+    assert captured["cache_read_input_tokens"] == 4096
+    assert captured["output_tokens"] == 127
+
+
+@pytest.mark.asyncio
+async def test_an_errored_turn_still_reports_the_counts_it_reached():
+    """The upstream-error exit, not just the truncation one.
+
+    They are independent branches, and a count emitted from one proves nothing
+    about the other.
+    """
+    lines = _sse(
+        [
+            {"type": "message_start", "message": {"usage": {"input_tokens": 16271}}},
+            {"type": "error", "error": {"type": "overloaded_error", "message": "busy"}},
+        ]
+    )
+
+    payloads = [
+        json.loads(l[len("data: ") :])
+        async for l in stream_anthropic_to_completions(_FakeStream(lines), "claude-opus-5")
+        if l.startswith("data: ") and l[6:].strip() != "[DONE]"
+    ]
+    usage_at = [i for i, p in enumerate(payloads) if "usage" in p]
+    error_at = [i for i, p in enumerate(payloads) if "error" in p]
+
+    assert usage_at, "an errored turn carried no usage"
+    assert payloads[usage_at[-1]]["usage"]["prompt_tokens"] == 16271
+    assert error_at and usage_at[-1] < error_at[0]
+
+
+@pytest.mark.asyncio
+async def test_an_errored_turn_that_reached_no_counts_carries_none():
+    """The abnormal exits need their own gate, not the normal exit's.
+
+    This is the path most likely to have reached no counts at all, so a
+    fabricated zero is likeliest here — and it is the shape that wipes a
+    consumer's running measurement.
+    """
+    lines = _sse([{"type": "error", "error": {"type": "overloaded_error", "message": "busy"}}])
+
+    payloads = [
+        json.loads(l[len("data: ") :])
+        async for l in stream_anthropic_to_completions(_FakeStream(lines), "claude-opus-5")
+        if l.startswith("data: ") and l[6:].strip() != "[DONE]"
+    ]
+
+    assert not [p for p in payloads if "usage" in p]
+
+
+@pytest.mark.asyncio
+async def test_the_caller_and_the_metering_row_describe_one_turn():
+    """One turn's chunk against that same turn's metering holder.
+
+    The two express the same counts in different conventions — the row keeps
+    Anthropic's native fields, the caller gets OpenAI's inclusive total — so
+    the check is that the row's parts add up to what the caller was told. A
+    field dropped on the way to either side is a per-turn divergence between
+    what Cypher measures and what the usage log says she used.
+    """
+    fresh, read, created, out = 300, 15971, 4096, 11
+    lines = _sse(
+        [
+            {
+                "type": "message_start",
+                "message": {
+                    "usage": {
+                        "input_tokens": fresh,
+                        "cache_read_input_tokens": read,
+                        "cache_creation_input_tokens": created,
+                    }
+                },
+            },
+            {
+                "type": "message_delta",
+                "delta": {"stop_reason": "end_turn"},
+                "usage": {"output_tokens": out},
+            },
+        ]
+    )
+
+    row: dict = {}
+    chunks = []
+    async for raw in stream_anthropic_to_completions(
+        _FakeStream(lines), "claude-opus-5", usage_holder=row
+    ):
+        payload = raw[len("data: ") :].strip()
+        if payload != "[DONE]":
+            chunks.append(json.loads(payload))
+
+    told = [c for c in chunks if "usage" in c][-1]["usage"]
+
+    assert told["prompt_tokens"] == (
+        row["input_tokens"] + row["cache_read_input_tokens"] + row["cache_creation_input_tokens"]
+    )
+    assert told["completion_tokens"] == row["output_tokens"]
+
+
+@pytest.mark.asyncio
+async def test_a_turn_whose_prompt_was_never_reported_carries_no_counts():
+    """A real output count does not license a fabricated prompt of zero.
+
+    Shims on this route report their prompt fields as null while reporting a
+    genuine output figure. A gate that only asked whether anything at all was
+    reported would emit `prompt_tokens: 0` here, which pi-ai reads as a
+    measured zero and writes over what it already knew.
+    """
+    lines = _sse(
+        [
+            {
+                "type": "message_start",
+                "message": {"usage": {"input_tokens": None, "cache_read_input_tokens": None}},
+            },
+            {
+                "type": "message_delta",
+                "delta": {"stop_reason": "end_turn"},
+                "usage": {"output_tokens": 127},
+            },
+        ]
+    )
+
+    assert not [c for c in await _collect(lines) if "usage" in c]
+
+
+@pytest.mark.asyncio
+async def test_counts_an_upstream_sends_as_floats_are_not_lost():
+    """A shim that JSON-encodes its counts as floats is still measured.
+
+    Dropping them does not read as missing — it reads as zero, on both the
+    chunk and the row, which agree and are both wrong.
+    """
+    lines = _sse(
+        [
+            {"type": "message_start", "message": {"usage": {"input_tokens": 16271.0}}},
+            {
+                "type": "message_delta",
+                "delta": {"stop_reason": "end_turn"},
+                "usage": {"output_tokens": 127.0},
+            },
+        ]
+    )
+
+    usage = [c for c in await _collect(lines) if "usage" in c][-1]["usage"]
+
+    assert usage["prompt_tokens"] == 16271
+    assert usage["completion_tokens"] == 127
+
+
+@pytest.mark.asyncio
+async def test_counts_reported_on_message_stop_are_folded_in():
+    """Anthropic reports earlier, but shims on this route report here."""
+    lines = _sse(
+        [
+            {"type": "message_delta", "delta": {"stop_reason": "end_turn"}},
+            {"type": "message_stop", "usage": {"input_tokens": 16271, "output_tokens": 127}},
+        ]
+    )
+
+    usage = [c for c in await _collect(lines) if "usage" in c][-1]["usage"]
+
+    assert usage["prompt_tokens"] == 16271
+    assert usage["completion_tokens"] == 127
+
+
+@pytest.mark.asyncio
+async def test_an_aborted_turn_is_recorded_as_aborted():
+    """Carrying counts must not make an abort look like a served turn.
+
+    The metering row reads its status from `outcome`, and an empty token
+    column was the only way an operator ever spotted these. Now that the
+    counts survive the abort, the outcome has to say what happened.
+    """
+
+    class _DyingStream:
+        async def aiter_lines(self):
+            for line in _sse(
+                [{"type": "message_start", "message": {"usage": {"input_tokens": 16271}}}]
+            ):
+                yield line
+            raise httpx.ReadError("upstream went away")
+
+    outcome: dict = {}
+    with pytest.raises(httpx.ReadError):
+        async for _ in stream_anthropic_to_completions(
+            _DyingStream(), "claude-opus-5", outcome=outcome
+        ):
+            pass
+
+    assert outcome["error_type"] == "upstream_stream_aborted"
