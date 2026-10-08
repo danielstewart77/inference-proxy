@@ -446,17 +446,81 @@ def transform_to_anthropic_messages(
 # ---------- Response: Anthropic Messages -> Chat Completions ----------
 
 
-def _usage_to_chat(anthropic_usage: dict) -> dict:
-    inp = anthropic_usage.get("input_tokens") or 0
-    out = anthropic_usage.get("output_tokens") or 0
+#: The fields that make up an OpenAI prompt total. If none of them is known,
+#: there is no prompt figure to report — only a zero that would read as one.
+_PROMPT_FIELDS = (
+    "input_tokens",
+    "cache_read_input_tokens",
+    "cache_creation_input_tokens",
+)
+
+
+def _as_count(value: object) -> Optional[int]:
+    """One reported token count as an int, or nothing if it is not one.
+
+    `bool` is excluded deliberately: it is an `int` subclass in Python, so a
+    stray `true` would be recorded as a count of one and stored in an integer
+    column. Floats and digit strings are accepted, because a shim that
+    JSON-encodes its counts that way is otherwise dropped entirely — and a
+    dropped count does not read as missing, it reads as zero.
+    """
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return int(value)
+    if isinstance(value, str) and value.strip().isdigit():
+        return int(value)
+    return None
+
+
+def _prompt_total(captured: dict) -> Optional[int]:
+    """The inclusive prompt total, or nothing if no part of it was reported.
+
+    Emptiness is the wrong question to ask of `captured`. An upstream that
+    reports its prompt fields as null while reporting a real output count
+    leaves a populated dict whose prompt side is pure fabrication — and a
+    consumer cannot tell a fabricated zero from a turn that genuinely used no
+    context, so it overwrites whatever it already knew with the zero. The
+    honest answer to "how big was the prompt" is sometimes "I was not told".
+    """
+    known = [_as_count(captured.get(f)) for f in _PROMPT_FIELDS]
+    if all(k is None for k in known):
+        return None
+    total = sum(k for k in known if k is not None)
+    return total or None
+
+
+def _usage_to_chat(anthropic_usage: dict) -> Optional[dict]:
+    """Anthropic's usage block as an OpenAI `usage` object.
+
+    The two wires disagree about what the prompt total means, and the
+    disagreement is silent. Anthropic's `input_tokens` **excludes** the cached
+    prefix — cache reads and cache creation are billed separately — while
+    OpenAI's `prompt_tokens` **includes** it, with the cached portion named as
+    a subset (the contract this repo states at `app/orm.py:287-290`). A
+    consumer recovers fresh input by subtracting the named subsets back out, so
+    handing it Anthropic's exclusive figure makes a cache-heavy turn's input
+    read as zero, and a created prefix with no wire field at all simply
+    vanishes — on the first turn of a conversation that is most of the context.
+    """
+    prompt = _prompt_total(anthropic_usage)
+    if prompt is None:
+        return None
+    out = _as_count(anthropic_usage.get("output_tokens")) or 0
     usage: dict = {
-        "prompt_tokens": inp,
+        "prompt_tokens": prompt,
         "completion_tokens": out,
-        "total_tokens": inp + out,
+        "total_tokens": prompt + out,
     }
-    cached = anthropic_usage.get("cache_read_input_tokens")
+    details = {}
+    cached = _as_count(anthropic_usage.get("cache_read_input_tokens"))
+    created = _as_count(anthropic_usage.get("cache_creation_input_tokens"))
     if cached is not None:
-        usage["prompt_tokens_details"] = {"cached_tokens": cached}
+        details["cached_tokens"] = cached
+    if created is not None:
+        details["cache_write_tokens"] = created
+    if details:
+        usage["prompt_tokens_details"] = details
     return usage
 
 
@@ -540,6 +604,40 @@ async def stream_anthropic_to_completions(
     created = int(time.time())
     captured: dict = {}
 
+    def record_usage(reported: object) -> None:
+        """Fold one event's usage into what we know, and publish it.
+
+        Not a blind `update`. Anthropic reports the input side on
+        `message_start` and the output side on `message_delta`, but an upstream
+        — or a partner shim on this same route — may send a *whole* usage
+        object on the later event with the fields it has nothing to say about
+        zeroed. A plain merge lets that erase a count the first event got
+        right, and because the metering row reads this same dict, the row and
+        the caller would then agree perfectly on a wrong number.
+
+        Published per event rather than once after the loop because there is no
+        `try` around that loop: a transport error or a caller hanging up skips
+        everything after it, and nothing can be yielded while a generator is
+        being closed. The row survives even when no chunk can.
+        """
+        if not isinstance(reported, dict):
+            return
+        for key, raw in reported.items():
+            count = _as_count(raw)
+            if count is None:
+                continue
+            # High-water mark, because every counter on this wire is cumulative
+            # and final — none of them legitimately decreases. That covers a
+            # later event re-reporting the whole block with zeros, and also the
+            # sentinel: Anthropic's own `message_start` carries
+            # `output_tokens: 1` as a placeholder, so a rule that refused only
+            # literal zeros would let that 1 stand over a real count, with the
+            # metering row and the caller agreeing on it.
+            previous = captured.get(key)
+            captured[key] = count if previous is None else max(previous, count)
+        if usage_holder is not None:
+            usage_holder.update(captured)
+
     def chunk(delta: dict, finish_reason: Optional[str] = None) -> str:
         payload = {
             "id": completion_id,
@@ -566,118 +664,178 @@ async def stream_anthropic_to_completions(
     ended = False
     failed: Optional[dict] = None
 
-    async for line in response.aiter_lines():
-        stripped = line.strip()
-        if not stripped or not stripped.startswith("data:"):
-            continue
-        data_str = stripped[5:].strip()
-        if not data_str or data_str == "[DONE]":
-            continue
-        try:
-            event = json.loads(data_str)
-        except json.JSONDecodeError:
-            continue
-        if not isinstance(event, dict):
-            continue
+    try:
+        async for line in response.aiter_lines():
+            stripped = line.strip()
+            if not stripped or not stripped.startswith("data:"):
+                continue
+            data_str = stripped[5:].strip()
+            if not data_str or data_str == "[DONE]":
+                continue
+            try:
+                event = json.loads(data_str)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(event, dict):
+                continue
 
-        kind = event.get("type")
+            kind = event.get("type")
 
-        if kind == "message_start":
-            captured.update((event.get("message") or {}).get("usage") or {})
+            if kind == "message_start":
+                record_usage((event.get("message") or {}).get("usage"))
 
-        elif kind == "content_block_start":
-            block = event.get("content_block") or {}
-            if block.get("type") == "tool_use":
-                saw_tool_use = True
-                index = next_tool_index
-                next_tool_index += 1
-                tool_index_for_block[event.get("index")] = index
-                yield chunk(
-                    {
-                        "tool_calls": [
-                            {
-                                "index": index,
-                                "id": block.get("id", ""),
-                                "type": "function",
-                                "function": {
-                                    "name": block.get("name", ""),
-                                    "arguments": "",
-                                },
-                            }
-                        ]
-                    }
-                )
+            elif kind == "content_block_start":
+                block = event.get("content_block") or {}
+                if block.get("type") == "tool_use":
+                    saw_tool_use = True
+                    index = next_tool_index
+                    next_tool_index += 1
+                    tool_index_for_block[event.get("index")] = index
+                    yield chunk(
+                        {
+                            "tool_calls": [
+                                {
+                                    "index": index,
+                                    "id": block.get("id", ""),
+                                    "type": "function",
+                                    "function": {
+                                        "name": block.get("name", ""),
+                                        "arguments": "",
+                                    },
+                                }
+                            ]
+                        }
+                    )
 
-        elif kind == "content_block_delta":
-            delta = event.get("delta") or {}
-            delta_type = delta.get("type")
-            if delta_type == "text_delta":
-                text = delta.get("text", "")
-                if text:
-                    yield chunk({"content": text})
-            elif delta_type == "thinking_delta":
-                thinking = delta.get("thinking", "")
-                if thinking:
-                    yield chunk({"reasoning_content": thinking})
-            elif delta_type == "input_json_delta":
-                index = tool_index_for_block.get(event.get("index"))
-                if index is None:
-                    continue
-                yield chunk(
-                    {
-                        "tool_calls": [
-                            {
-                                "index": index,
-                                "function": {
-                                    "arguments": delta.get("partial_json", "")
-                                },
-                            }
-                        ]
-                    }
-                )
+            elif kind == "content_block_delta":
+                delta = event.get("delta") or {}
+                delta_type = delta.get("type")
+                if delta_type == "text_delta":
+                    text = delta.get("text", "")
+                    if text:
+                        yield chunk({"content": text})
+                elif delta_type == "thinking_delta":
+                    thinking = delta.get("thinking", "")
+                    if thinking:
+                        yield chunk({"reasoning_content": thinking})
+                elif delta_type == "input_json_delta":
+                    index = tool_index_for_block.get(event.get("index"))
+                    if index is None:
+                        continue
+                    yield chunk(
+                        {
+                            "tool_calls": [
+                                {
+                                    "index": index,
+                                    "function": {
+                                        "arguments": delta.get("partial_json", "")
+                                    },
+                                }
+                            ]
+                        }
+                    )
 
-        elif kind == "message_delta":
-            stop_reason = (event.get("delta") or {}).get("stop_reason")
-            if stop_reason:
-                finish_reason = _FINISH_FOR_STOP_REASON.get(stop_reason, "stop")
+            elif kind == "message_delta":
+                stop_reason = (event.get("delta") or {}).get("stop_reason")
+                if stop_reason:
+                    finish_reason = _FINISH_FOR_STOP_REASON.get(stop_reason, "stop")
+                    ended = True
+                record_usage(event.get("usage"))
+
+            elif kind == "message_stop":
+                # Anthropic reports on `message_start` and `message_delta`, but
+                # shims on this same route attach final metrics here, and a count
+                # ignored on this event is a turn that reads as unmeasured on both
+                # the chunk and the metering row.
+                record_usage(event.get("usage"))
                 ended = True
-            usage_delta = event.get("usage") or {}
-            if usage_delta:
-                captured.update(usage_delta)
 
-        elif kind == "message_stop":
-            ended = True
+            elif kind == "error":
+                # The upstream failed mid-stream, after a 200 and after bytes have
+                # already reached the caller. The status is spent, so the only
+                # honest thing left is to pass its own words through in the shape
+                # an OpenAI client reads an error out of — and then stop, rather
+                # than following it with a terminator that says the turn
+                # completed.
+                failed = event.get("error") or {"message": "upstream stream error"}
+                break
+    except BaseException:
+        # The loop is the only place counts are gathered, and two ways out of
+        # it reach none of the code below: the transport raising mid-stream,
+        # and the caller hanging up, which arrives as GeneratorExit at a
+        # yield. Neither can yield anything, so the metering row is all that
+        # is left — and a row carrying full counts at status 200 with no
+        # error named is indistinguishable from a turn that was served. The
+        # counts are worth keeping; staying silent about how it ended is not,
+        # because an empty token column was the only way an operator spotted
+        # these before they carried numbers.
+        if outcome is not None and not outcome.get("error_type"):
+            outcome["error_type"] = "upstream_stream_aborted"
+        raise
 
-        elif kind == "error":
-            # The upstream failed mid-stream, after a 200 and after bytes have
-            # already reached the caller. The status is spent, so the only
-            # honest thing left is to pass its own words through in the shape
-            # an OpenAI client reads an error out of — and then stop, rather
-            # than following it with a terminator that says the turn
-            # completed.
-            failed = event.get("error") or {"message": "upstream stream error"}
-            break
+    # Counts only when the upstream actually reported some. `_usage_to_chat({})`
+    # is a well-formed object of zeros, and a consumer overwrites its running
+    # usage from every chunk that carries one, so a fabricated zero erases a
+    # real measurement rather than adding nothing. A reader that is told
+    # nothing can say "unmeasured"; one told zero cannot tell that from a turn
+    # that genuinely used no context.
+    def usage_only_chunk() -> Optional[str]:
+        """The counts on their own, for the exits that have no finish chunk.
 
-    if usage_holder is not None:
-        usage_holder.update(captured)
+        Carries one `finish_reason: null` choice rather than OpenAI's canonical
+        empty `choices: []`. Both are read correctly by the consumer this
+        change exists for, which looks at `chunk.usage` before it looks at the
+        choices — but an empty list is indexed blindly by plenty of SDKs, and
+        by four tests in this file, and an abnormal exit is the worst moment to
+        hand a client a shape it has never seen.
+        """
+        reported = _usage_to_chat(captured)
+        if reported is None:
+            return None
+        payload = {
+            "id": completion_id,
+            "object": "chat.completion.chunk",
+            "created": created,
+            "model": model,
+            "choices": [{"index": 0, "delta": {}, "finish_reason": None}],
+            "usage": reported,
+        }
+        return f"data: {json.dumps(payload)}\n\n"
 
     # A turn that failed after a 200 is still a failure. Metered as a success
     # it is invisible: the usage row says the request was served, and the only
     # evidence is a chunk the operator never sees.
+    #
+    # Whatever counts it reached still go out, and go out *first*: a partial
+    # count beats none, and an OpenAI client raises on the error line and
+    # discards everything behind it, so usage emitted after one never arrives.
     if failed is not None:
         if outcome is not None:
             outcome["error_type"] = failed.get("type") or "upstream_stream_error"
+        partial = usage_only_chunk()
+        if partial is not None:
+            yield partial
         yield f"data: {json.dumps({'error': failed})}\n\n"
         return
 
     if not ended:
         if outcome is not None:
             outcome["error_type"] = "upstream_stream_truncated"
+        partial = usage_only_chunk()
+        if partial is not None:
+            yield partial
         yield f"data: {json.dumps({'error': {'type': 'api_error', 'message': 'Upstream stream ended before the turn completed'}})}\n\n"
         return
 
     if saw_tool_use and finish_reason == "stop":
         finish_reason = "tool_calls"
 
-    yield chunk({}, finish_reason)
+    # On the ordinary path the counts ride the finish chunk the caller already
+    # expects, rather than an extra one. The shape every other client of this
+    # route sees is then unchanged — and this route serves a dozen of them.
+    final = json.loads(chunk({}, finish_reason)[len("data: ") :])
+    reported = _usage_to_chat(captured)
+    if reported is not None:
+        final["usage"] = reported
+    yield f"data: {json.dumps(final)}\n\n"
     yield "data: [DONE]\n\n"
