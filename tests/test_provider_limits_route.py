@@ -233,7 +233,7 @@ def test_a_blank_context_window_stays_null_rather_than_becoming_zero(client):
     assert _parse_context_window("   ") is None
 
 
-def _post_model(client, monkeypatch, **fields):
+def _post_model(client, monkeypatch, model_id=1, **fields):
     async def _allow(request):
         return None
 
@@ -246,7 +246,7 @@ def _post_model(client, monkeypatch, **fields):
         "context_window": "", "effort_levels": "", "enabled": "on",
     }
     data.update(fields)
-    return client.post("/admin/models/1", data=data, follow_redirects=False)
+    return client.post(f"/admin/models/{model_id}", data=data, follow_redirects=False)
 
 
 def test_a_models_effort_levels_come_back_on_the_listing_in_the_order_set(
@@ -274,3 +274,20 @@ def test_an_unknown_effort_level_is_refused_rather_than_stored(client, monkeypat
     assert response.status_code == 400
     models = {m["id"]: m for m in client.get("/v1/models").json()["data"]}
     assert models["claude-opus-5"]["effort_levels"] == []
+
+
+def test_each_harness_is_offered_only_the_effort_words_it_accepts(client, monkeypatch):
+    """Claude takes max and no minimal; Codex the reverse. A word the CLI
+    rejects, stored on a conversation, breaks every respawn after it."""
+    _post_model(client, monkeypatch, effort_levels="minimal, low, high, max")
+    _post_model(client, monkeypatch, model_id=2, provider_id="2",
+                effort_levels="minimal, low, high, max")
+
+    def levels(harness, model):
+        rows = client.get(f"/v1/models?harness={harness}").json()["data"]
+        return {m["id"]: m for m in rows}[model]["effort_levels"]
+
+    assert levels("claude", "claude-opus-5") == ["low", "high", "max"]
+    assert levels("codex", "gpt-5.6") == ["minimal", "low", "high"]
+    # dsh passes no effort to its model, so it is offered none.
+    assert levels("dsh", "gpt-5.6") == []
