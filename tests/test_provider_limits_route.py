@@ -291,3 +291,26 @@ def test_each_harness_is_offered_only_the_effort_words_it_accepts(client, monkey
     assert levels("codex", "gpt-5.6") == ["minimal", "low", "high"]
     # dsh passes no effort to its model, so it is offered none.
     assert levels("dsh", "gpt-5.6") == []
+
+
+def test_effort_levels_set_when_a_model_is_added_come_back_on_the_listing(
+    client, monkeypatch,
+):
+    """The add form is the first place a model gets its levels; dropping
+    them there lists a new model as taking no effort until someone edits it."""
+    async def _allow(request):
+        return None
+
+    monkeypatch.setattr("app.admin.models.require_html_admin", _allow)
+    response = client.post("/admin/models", data={
+        "deployment_name": "claude-new", "target_uri": "", "provider_id": "1",
+        "harnesses": "", "credential_id": "", "api_version": "",
+        "auth_scheme": "bearer", "label": "", "description": "",
+        "cost_per_million_input": "", "cost_per_million_output": "",
+        "cost_per_million_cache_write": "", "cost_per_million_cache_read": "",
+        "context_window": "", "effort_levels": "low, high", "enabled": "on",
+    }, follow_redirects=False)
+
+    assert response.status_code in (303, 302)
+    models = {m["id"]: m for m in client.get("/v1/models").json()["data"]}
+    assert models["claude-new"]["effort_levels"] == ["low", "high"]
