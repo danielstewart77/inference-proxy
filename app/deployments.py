@@ -195,6 +195,39 @@ HARNESS_WIRES = {
 }
 
 
+#: The header a caller names its harness in.
+HARNESS_HEADER = "X-Hive-Harness"
+
+#: Harnesses whose requests name themselves in `HARNESS_HEADER`. dsh shares
+#: the chat wire with Codex, so without the header a model granted to dsh and
+#: withheld from Codex was offered in dsh's picker and refused on its first
+#: turn. Hermes is absent because it sends no header: the listing judges a
+#: harness by its own name only when its requests will be judged the same way,
+#: so naming one here that does not declare itself hides models from its
+#: picker that its requests still reach.
+DECLARED_HARNESSES = frozenset({"dsh"})
+
+#: Every harness a model can be granted to or withheld from: the ones the
+#: request path can tell apart, by wire or by declaration.
+WITHHOLDABLE_HARNESSES = tuple(
+    sorted(set(HARNESS_FOR_WIRE.values()) | DECLARED_HARNESSES)
+)
+
+
+def judged_harness(wire: Optional[str], declared: Optional[str] = None) -> Optional[str]:
+    """The harness a request on `wire` is judged as.
+
+    A declared harness is honoured when it is one that declares itself and
+    actually sends this wire; anything else is judged as the wire's default
+    harness. Withholding keeps a picker honest about what a harness can use;
+    it is not access control, which is the key's job.
+    """
+    name = (declared or "").strip().lower()
+    if name in DECLARED_HARNESSES and wire in HARNESS_WIRES.get(name, ()):
+        return name
+    return HARNESS_FOR_WIRE.get(wire or "")
+
+
 def offerable_to(row: Model, wire: str, harness: str) -> bool:
     """Whether `harness` should be *offered* this model on this shape.
 
@@ -310,6 +343,7 @@ async def resolve_deployment(
     error_kind: str = "openai",
     is_admin: bool = False,
     wire: Optional[str] = None,
+    harness: Optional[str] = None,
 ) -> DeploymentTarget:
     """Look up a deployment by name; return a fully-populated target.
 
@@ -321,6 +355,9 @@ async def resolve_deployment(
     forgets to pass it fails closed (over-restricts) rather than leaking. An
     admin-only row hit by a non-admin is reported as 404 — indistinguishable
     from a model that does not exist, so restricted models aren't enumerable.
+
+    `harness` is the caller's declared harness (`HARNESS_HEADER`), judged by
+    `judged_harness` against the wire.
     """
     if not name:
         _raise(error_kind, 400, "Missing required 'model' field")
@@ -342,7 +379,7 @@ async def resolve_deployment(
     if row.admin_only and not is_admin:
         # Same shape/status as "not registered" — don't reveal it exists.
         _raise(error_kind, 404, f"Model {name!r} is not registered")
-    harness = HARNESS_FOR_WIRE.get(wire or "")
+    harness = judged_harness(wire, harness)
     if harness and not row.visible_to(harness):
         # Withheld from this harness — reported exactly as absent, for the
         # same reason an admin-only row is: a refusal that differs from a
@@ -407,15 +444,15 @@ async def listing_for(
         wires = [wire for wire in wires_for(row) if wire in wanted]
         if harness:
             # Withholding is judged per wire, and against the harness that
-            # wire's requests will actually arrive as. `resolve_deployment`
-            # has only the shape to go on, so judging the listing by the
-            # caller's own name instead produces two disagreements: hermes
-            # can be granted nothing (the admin form accepts only claude and
-            # codex) yet reaches everything, and a model granted to a name
-            # the request path cannot see would be offered and then refused.
+            # wire's requests will actually arrive as — the caller's own name
+            # only where its requests declare it. Judging every caller by its
+            # own name produces two disagreements: hermes, which declares
+            # nothing, would be hidden models its requests still reach, and a
+            # model granted to a name the request path cannot see would be
+            # offered and then refused.
             wires = [
                 wire for wire in wires
-                if row.visible_to(HARNESS_FOR_WIRE.get(wire, harness))
+                if row.visible_to(judged_harness(wire, harness) or harness)
                 and offerable_to(row, wire, harness)
             ]
         if not wires:

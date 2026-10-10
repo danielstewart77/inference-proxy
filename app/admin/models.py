@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth import require_html_admin
 from app.db import get_session
+from app.deployments import WITHHOLDABLE_HARNESSES
 from app.orm import Credential, Model, Provider
 from app.templating import templates
 
@@ -159,11 +160,12 @@ def _parse_harnesses(raw: Optional[str]) -> Optional[str]:
     """
     parts = [part.strip().lower() for part in (raw or "").split(",")]
     parts = [part for part in parts if part]
-    unknown = [part for part in parts if part not in ("claude", "codex")]
+    unknown = [part for part in parts if part not in WITHHOLDABLE_HARNESSES]
     if unknown:
         raise HTTPException(
             status_code=400,
-            detail=f"Unknown harness(es): {', '.join(unknown)}. Use claude and/or codex.",
+            detail=f"Unknown harness(es): {', '.join(unknown)}. "
+                   f"Use {', '.join(WITHHOLDABLE_HARNESSES)}.",
         )
     return ",".join(sorted(set(parts))) or None
 
