@@ -437,9 +437,34 @@ async def listing_for(
                 # distinguishable from a real window, or it draws a
                 # conversation against a denominator nobody set.
                 "context_window": row.context_window,
+                # Always a list, empty when the model takes no effort: a
+                # surface asks "which levels" and an empty answer is the
+                # whole of "none".
+                "effort_levels": effort_levels(row.effort_levels, harness),
             }
         )
     return {"object": "list", "data": data}
+
+
+#: The effort words each harness's CLI accepts. A model's row names the levels
+#: the *model* takes; the listing narrows them to the words the asking harness
+#: can pass, since Claude takes `max` and no `minimal` and Codex the reverse,
+#: and a level stored on a conversation is reapplied on every respawn — a word
+#: the CLI rejects would break the conversation until someone changed it back.
+HARNESS_EFFORT_LEVELS = {
+    "claude": ("low", "medium", "high", "xhigh", "max"),
+    "codex": ("minimal", "low", "medium", "high", "xhigh"),
+}
+
+
+def effort_levels(raw: Optional[str], harness: Optional[str] = None) -> list[str]:
+    """A model's stored effort levels in their stored order, narrowed to the
+    words `harness` accepts. A harness with no effort setting gets none."""
+    levels = [part.strip() for part in (raw or "").split(",") if part.strip()]
+    if harness is None:
+        return levels
+    accepted = HARNESS_EFFORT_LEVELS.get(harness, ())
+    return [level for level in levels if level in accepted]
 
 
 def reject_wrong_protocol(

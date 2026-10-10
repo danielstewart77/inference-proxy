@@ -168,6 +168,33 @@ def _parse_harnesses(raw: Optional[str]) -> Optional[str]:
     return ",".join(sorted(set(parts))) or None
 
 
+#: Every effort level any harness accepts. Claude takes low through max, Codex
+#: minimal through xhigh; a model's row names the subset it supports.
+EFFORT_LEVELS = ("minimal", "low", "medium", "high", "xhigh", "max")
+
+
+def _parse_effort_levels(raw: Optional[str]) -> Optional[str]:
+    """Normalize a model's effort levels, keeping the order typed.
+
+    Blank means the model takes no effort setting. An unknown word is refused
+    rather than stored, since a stored typo is a button that spawns a harness
+    on a flag value it rejects.
+    """
+    parts: list[str] = []
+    for part in (raw or "").split(","):
+        part = part.strip().lower()
+        if part and part not in parts:
+            parts.append(part)
+    unknown = [part for part in parts if part not in EFFORT_LEVELS]
+    if unknown:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unknown effort level(s): {', '.join(unknown)}. "
+                   f"Use {', '.join(EFFORT_LEVELS)}.",
+        )
+    return ",".join(parts) or None
+
+
 def _upstream_required(target_uri: Optional[str], provider_id: Optional[int]) -> str:
     """A model needs somewhere to go: a provider, or its own full URI."""
     uri = (target_uri or "").strip()
@@ -304,6 +331,7 @@ async def add_model(
     cost_per_million_cache_write: str = Form(""),
     cost_per_million_cache_read: str = Form(""),
     context_window: str = Form(""),
+    effort_levels: str = Form(""),
     enabled: str = Form("on"),
     admin_only: str = Form(""),
     session: AsyncSession = Depends(get_session),
@@ -350,6 +378,7 @@ async def add_model(
             cost_per_million_cache_write=_parse_decimal(cost_per_million_cache_write),
             cost_per_million_cache_read=_parse_decimal(cost_per_million_cache_read),
             context_window=_parse_context_window(context_window),
+            effort_levels=_parse_effort_levels(effort_levels),
         )
     )
     await session.commit()
@@ -373,6 +402,7 @@ async def update_model(
     cost_per_million_cache_write: str = Form(""),
     cost_per_million_cache_read: str = Form(""),
     context_window: str = Form(""),
+    effort_levels: str = Form(""),
     enabled: str = Form(""),  # checkbox: "on" if checked, "" if not
     admin_only: str = Form(""),  # checkbox: "on" if checked, "" if not
     session: AsyncSession = Depends(get_session),
@@ -402,6 +432,7 @@ async def update_model(
     target.enabled = (enabled == "on")
     target.admin_only = (admin_only == "on")
     target.context_window = _parse_context_window(context_window)
+    target.effort_levels = _parse_effort_levels(effort_levels)
     target.cost_per_million_input = _parse_decimal(cost_per_million_input)
     target.cost_per_million_output = _parse_decimal(cost_per_million_output)
     target.cost_per_million_cache_write = _parse_decimal(cost_per_million_cache_write)

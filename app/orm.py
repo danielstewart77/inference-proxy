@@ -243,6 +243,12 @@ class Model(Base):
     # spawned without the 1M pin holds 200k on a row that says 1000000), so a
     # caller that can see the live conversation should prefer what it reports.
     context_window: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    # The reasoning-effort levels this deployment accepts, comma-separated in
+    # the order a picker shows them. Null means the model takes no effort
+    # setting, which is a fact about the model rather than an omission: a
+    # surface offering levels for it would hand the harness a flag the model
+    # rejects.
+    effort_levels: Mapped[Optional[str]] = mapped_column(Unicode(128), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, server_default=func.now()
     )

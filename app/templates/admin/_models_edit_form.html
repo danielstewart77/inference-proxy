@@ -60,6 +60,10 @@
         <label>Context window (tokens)</label>
         <input type="number" min="1" name="context_window" value="{{ m.context_window if m.context_window is not none else '' }}">
       </div>
+      <div>
+        <label>Effort levels</label>
+        <input type="text" name="effort_levels" value="{{ m.effort_levels or '' }}">
+      </div>
     </div>
   </form>
 
