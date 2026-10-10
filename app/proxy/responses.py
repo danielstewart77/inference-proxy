@@ -21,6 +21,7 @@ from app.azure import (
 )
 from app.db import get_session
 from app.deployments import (
+    HARNESS_HEADER,
     DeploymentTarget,
     build_upstream_headers,
     reject_wrong_protocol,
@@ -55,7 +56,8 @@ async def responses_passthrough(
 
     model = body.get("model")
     target = await resolve_deployment(
-        session, model, is_admin=is_admin, wire="openai_responses"
+        session, model, is_admin=is_admin, wire="openai_responses",
+        harness=request.headers.get(HARNESS_HEADER),
     )
     reject_wrong_protocol(target, expected="openai_responses")
 

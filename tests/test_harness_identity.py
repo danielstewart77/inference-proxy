@@ -25,9 +25,11 @@ from app.orm import Base, Credential, Model, Provider
 
 @pytest_asyncio.fixture
 async def client(monkeypatch):
-    """The app with one native chat upstream serving a model granted to dsh."""
+    """The app with a chat upstream and a Responses upstream, each serving a
+    model granted to dsh."""
     import app.main as main
     import app.proxy.chat_completions as chat
+    import app.proxy.responses as responses
 
     engine = create_async_engine("sqlite+aiosqlite://", future=True)
     async with engine.begin() as conn:
@@ -49,6 +51,18 @@ async def client(monkeypatch):
         await setup.flush()
         setup.add(
             Model(deployment_name="qwen35-dsh", provider_id=provider.id, harnesses="dsh")
+        )
+        responses_only = Provider(
+            name="openai",
+            label="OpenAI",
+            base_url="https://chatgpt.example",
+            responses_path="/v1/responses",
+            credential_id=credential.id,
+        )
+        setup.add(responses_only)
+        await setup.flush()
+        setup.add(
+            Model(deployment_name="gpt-dsh", provider_id=responses_only.id, harnesses="dsh")
         )
         await setup.commit()
 
@@ -74,11 +88,12 @@ async def client(monkeypatch):
             request=httpx.Request("POST", url),
         )
 
-    for module in (main, chat):
+    for module in (main, chat, responses):
         monkeypatch.setattr(module, "validate_api_key", lambda *a, **k: True)
         monkeypatch.setattr(module, "resolve_requester_role", lambda *a, **k: "user")
-    monkeypatch.setattr(chat, "resolve_principal", lambda *a, **k: None)
-    monkeypatch.setattr(chat, "post_with_retries", _answer)
+    for module in (chat, responses):
+        monkeypatch.setattr(module, "resolve_principal", lambda *a, **k: None)
+        monkeypatch.setattr(module, "post_with_retries", _answer)
     app = create_app()
     app.dependency_overrides[get_session] = _session
     with TestClient(app) as c:
@@ -105,12 +120,28 @@ def test_a_request_identified_as_dsh_is_served_a_model_withheld_from_codex(clien
     assert anonymous.status_code == 404
 
 
+def test_the_harness_header_is_matched_regardless_of_case(client):
+    """HTTP header names are case-insensitive, and so is the harness named."""
+    assert _ask(client, **{HARNESS_HEADER.lower(): "DSH"}).status_code == 200
+
+
+def test_a_dsh_declaration_on_a_wire_dsh_does_not_send_is_not_honoured(client):
+    """dsh speaks chat completions only; on the Responses wire it is Codex."""
+    response = client.post(
+        "/v1/responses",
+        json={"model": "gpt-dsh", "input": "hi"},
+        headers={"Authorization": "Bearer test", HARNESS_HEADER: "dsh"},
+    )
+
+    assert response.status_code == 404
+
+
 def test_the_listing_offers_dsh_what_its_requests_will_be_served(client):
     """The picker and the request path agree: dsh sees it, codex does not."""
     dsh = [row["id"] for row in client.get("/v1/models?harness=dsh").json()["data"]]
     codex = [row["id"] for row in client.get("/v1/models?harness=codex").json()["data"]]
 
-    assert dsh == ["qwen35-dsh"]
+    assert dsh == ["gpt-dsh", "qwen35-dsh"]
     assert codex == []
 
 
