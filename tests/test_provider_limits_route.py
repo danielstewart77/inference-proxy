@@ -231,3 +231,46 @@ def test_a_blank_context_window_stays_null_rather_than_becoming_zero(client):
 
     assert _parse_context_window("") is None
     assert _parse_context_window("   ") is None
+
+
+def _post_model(client, monkeypatch, **fields):
+    async def _allow(request):
+        return None
+
+    monkeypatch.setattr("app.admin.models.require_html_admin", _allow)
+    data = {
+        "target_uri": "", "provider_id": "1", "harnesses": "", "credential_id": "",
+        "api_version": "", "auth_scheme": "bearer", "label": "", "description": "",
+        "cost_per_million_input": "", "cost_per_million_output": "",
+        "cost_per_million_cache_write": "", "cost_per_million_cache_read": "",
+        "context_window": "", "effort_levels": "", "enabled": "on",
+    }
+    data.update(fields)
+    return client.post("/admin/models/1", data=data, follow_redirects=False)
+
+
+def test_a_models_effort_levels_come_back_on_the_listing_in_the_order_set(
+    client, monkeypatch,
+):
+    """Every surface's effort picker draws from this list, in this order."""
+    response = _post_model(client, monkeypatch, effort_levels="low, medium, high, MAX")
+
+    assert response.status_code in (303, 302)
+    models = {m["id"]: m for m in client.get("/v1/models").json()["data"]}
+    assert models["claude-opus-5"]["effort_levels"] == ["low", "medium", "high", "max"]
+
+
+def test_a_model_with_no_effort_levels_lists_an_empty_list(client):
+    """Empty is the whole of "this model takes no effort setting"."""
+    models = {m["id"]: m for m in client.get("/v1/models").json()["data"]}
+
+    assert models["gpt-5.6"]["effort_levels"] == []
+
+
+def test_an_unknown_effort_level_is_refused_rather_than_stored(client, monkeypatch):
+    """A stored typo becomes a button that spawns a harness on a value it rejects."""
+    response = _post_model(client, monkeypatch, effort_levels="high, turbo")
+
+    assert response.status_code == 400
+    models = {m["id"]: m for m in client.get("/v1/models").json()["data"]}
+    assert models["claude-opus-5"]["effort_levels"] == []
