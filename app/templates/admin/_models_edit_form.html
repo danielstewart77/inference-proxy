@@ -17,7 +17,7 @@
       {% endfor %}
     </select>
     <label>Restrict to harnesses (blank means every harness the provider serves)</label>
-    <input type="text" name="harnesses" value="{{ m.harnesses or '' }}" placeholder="claude, codex">
+    <input type="text" name="harnesses" value="{{ m.harnesses or '' }}" placeholder="claude, codex, dsh">
     <label>Target URI (only when no provider is chosen)</label>
     <input type="text" name="target_uri" value="{{ m.target_uri or '' }}">
     <label>Auth scheme (how the secret is sent upstream)</label>

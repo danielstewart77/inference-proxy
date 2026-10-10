@@ -32,6 +32,7 @@ from app.azure import post_with_retries
 from app.config import config
 from app.db import get_session
 from app.deployments import (
+    HARNESS_HEADER,
     DeploymentTarget,
     build_upstream_headers,
     reject_wrong_protocol,
@@ -529,7 +530,8 @@ async def _handle_completions(
 
     model = deployment_override or body.get("model")
     target = await resolve_deployment(
-        session, model, is_admin=is_admin, wire="chat_completions"
+        session, model, is_admin=is_admin, wire="chat_completions",
+        harness=request.headers.get(HARNESS_HEADER),
     )
     reject_wrong_protocol(target, expected="chat_completions_any")
 
