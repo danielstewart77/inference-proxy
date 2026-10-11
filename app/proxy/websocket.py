@@ -19,7 +19,8 @@ from app.azure import (
     strip_unsupported_input_fields,
 )
 from app.db import SessionLocal
-from app.deployments import reject_wrong_protocol, resolve_deployment
+from app.deployments import build_upstream_headers, reject_wrong_protocol, resolve_deployment
+from app.proxy.overflow import overflow_failed_event, overflow_message
 from app.utils import log
 
 router = APIRouter()
@@ -136,6 +137,17 @@ async def responses_websocket(websocket: WebSocket):
                         f"[Responses WS] Azure HTTP error {response.status_code}: "
                         f"{error_body[:500]}"
                     )
+                    overflow = overflow_message(error_body)
+                    if overflow:
+                        # Retrying the same oversized prompt can only fail the
+                        # same way, five times over with backoff. Said once, in
+                        # the failure event Codex reads a full window from.
+                        captured_error = "context_length_exceeded"
+                        await websocket.send_text(
+                            json.dumps(overflow_failed_event(overflow))
+                        )
+                        await websocket.close(code=1000)
+                        return
                     if (
                         not stripped_reasoning
                         and response.status_code == 400
@@ -181,6 +193,27 @@ async def responses_websocket(websocket: WebSocket):
                         continue
 
                     line_count += 1
+
+                    overflow = None
+                    if "response.failed" in payload or '"error"' in payload:
+                        try:
+                            overflow = overflow_message(json.loads(payload))
+                        except Exception:
+                            overflow = None
+                    if overflow:
+                        # Mid-stream overflow: never retried, and named in the
+                        # shape Codex reads whatever the upstream called it.
+                        captured_error = "context_length_exceeded"
+                        for buffered in buffer:
+                            await websocket.send_text(buffered)
+                        buffer.clear()
+                        await websocket.send_text(
+                            json.dumps(overflow_failed_event(overflow))
+                        )
+                        got_error = True
+                        flushed = True
+                        error_type = "context_length_exceeded"
+                        break
 
                     if '"type":"error"' in payload or '"type": "error"' in payload:
                         got_error = True

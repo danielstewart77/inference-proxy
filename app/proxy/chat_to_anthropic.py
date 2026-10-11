@@ -29,6 +29,9 @@ from typing import AsyncIterator, Optional
 
 import httpx
 
+from app.proxy.overflow import overflow_error, overflow_message
+
+
 class UntranslatableRequest(ValueError):
     """The caller sent something this wire has no equivalent for.
 
@@ -64,11 +67,16 @@ THINKING_HEADROOM = 4096
 #: cannot be fitted beneath the caller's own ceiling is not sent at all.
 MIN_THINKING_BUDGET = 1024
 
+#: Anthropic's stop reason for a turn that ran into the model's window. It is
+#: not a finish: reported as `length` it reads as an answer cut short by
+#: `max_tokens`, which a caller retries unchanged and which never rotates the
+#: conversation that no longer fits. Every path reports it as an overflow.
+CONTEXT_OVERFLOW_STOP = "model_context_window_exceeded"
+
 _FINISH_FOR_STOP_REASON = {
     "end_turn": "stop",
     "stop_sequence": "stop",
     "max_tokens": "length",
-    "model_context_window_exceeded": "length",
     "tool_use": "tool_calls",
     "pause_turn": "stop",
     # A refused generation is not a finished one. Reported as `stop` it is an
@@ -737,10 +745,16 @@ async def stream_anthropic_to_completions(
 
             elif kind == "message_delta":
                 stop_reason = (event.get("delta") or {}).get("stop_reason")
+                record_usage(event.get("usage"))
+                if stop_reason == CONTEXT_OVERFLOW_STOP:
+                    failed = overflow_error(
+                        f"{model} reached its context window mid-turn "
+                        f"(stop_reason {CONTEXT_OVERFLOW_STOP})"
+                    )
+                    break
                 if stop_reason:
                     finish_reason = _FINISH_FOR_STOP_REASON.get(stop_reason, "stop")
                     ended = True
-                record_usage(event.get("usage"))
 
             elif kind == "message_stop":
                 # Anthropic reports on `message_start` and `message_delta`, but
@@ -758,6 +772,9 @@ async def stream_anthropic_to_completions(
                 # than following it with a terminator that says the turn
                 # completed.
                 failed = event.get("error") or {"message": "upstream stream error"}
+                overflow = overflow_message(failed)
+                if overflow:
+                    failed = overflow_error(overflow)
                 break
     except BaseException:
         # The loop is the only place counts are gathered, and two ways out of
@@ -811,7 +828,9 @@ async def stream_anthropic_to_completions(
     # discards everything behind it, so usage emitted after one never arrives.
     if failed is not None:
         if outcome is not None:
-            outcome["error_type"] = failed.get("type") or "upstream_stream_error"
+            outcome["error_type"] = (
+                failed.get("code") or failed.get("type") or "upstream_stream_error"
+            )
         partial = usage_only_chunk()
         if partial is not None:
             yield partial

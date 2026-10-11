@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import time
 from typing import Optional
 
@@ -27,10 +28,37 @@ from app.deployments import (
     reject_wrong_protocol,
     resolve_deployment,
 )
+from app.proxy.overflow import overflow_body, overflow_failed_event, overflow_message
 from app.utils import log
 
 router = APIRouter()
 ENDPOINT_LABEL = "responses"
+
+
+def _refusal(status_code: int, raw: bytes | str) -> JSONResponse:
+    """The upstream's refusal, at its own status, in words a caller can act on.
+
+    A context overflow is named `context_length_exceeded` whatever dialect
+    the upstream said it in — the caller rotates on that code, and a
+    blanket "Upstream API error: 400" carries nothing to rotate on. Any other
+    refusal passes through as the upstream sent it; only a body that is not
+    JSON is wrapped.
+    """
+    if isinstance(raw, bytes):
+        raw = raw.decode("utf-8", "replace")
+    overflow = overflow_message(raw)
+    if overflow:
+        return JSONResponse(status_code=status_code, content=overflow_body(overflow))
+    try:
+        content = json.loads(raw)
+    except (ValueError, json.JSONDecodeError):
+        content = {
+            "error": {
+                "message": raw.strip() or f"Upstream API error: {status_code}",
+                "type": "api_error" if status_code >= 500 else "invalid_request_error",
+            }
+        }
+    return JSONResponse(status_code=status_code, content=content)
 
 
 @router.post("/v1/responses")
@@ -146,10 +174,7 @@ async def _handle_non_streaming(
             error_type=f"upstream_{response.status_code}",
             started_at=started_at,
         )
-        raise HTTPException(
-            status_code=response.status_code,
-            detail=f"Upstream API error: {response.status_code}",
-        )
+        return _refusal(response.status_code, response.content)
 
     log(f"[Responses API] Response received: {len(response.content)} bytes")
     azure_result = response.json()
@@ -171,8 +196,6 @@ async def _handle_streaming(
     request: Optional[Request] = None,
     started_at: Optional[float] = None,
 ) -> StreamingResponse:
-    import json as _json
-
     response = await post_with_retries(
         url, headers, body, stream=True, log_prefix="[Responses API]"
     )
@@ -197,14 +220,17 @@ async def _handle_streaming(
                     principal, request=request, model=target.name, endpoint=ENDPOINT_LABEL,
                     status_code=400, error_type="azure_400", started_at=started_at,
                 )
-                raise HTTPException(status_code=400, detail="Azure API error: 400")
+                return _refusal(400, error_body)
         else:
             log(f"[Responses API] Azure error 400: {error_body[:500]}")
             usage.schedule(
                 principal, request=request, model=target.name, endpoint=ENDPOINT_LABEL,
-                status_code=400, error_type="azure_400", started_at=started_at,
+                status_code=400,
+                error_type="context_length_exceeded"
+                if overflow_message(error_body) else "azure_400",
+                started_at=started_at,
             )
-            raise HTTPException(status_code=400, detail="Azure API error: 400")
+            return _refusal(400, error_body)
 
     if response.status_code != 200:
         error_body = await response.aread()
@@ -216,18 +242,20 @@ async def _handle_streaming(
             error_type=f"upstream_{response.status_code}",
             started_at=started_at,
         )
-        raise HTTPException(
-            status_code=response.status_code,
-            detail=f"Upstream API error: {response.status_code}",
-        )
+        return _refusal(response.status_code, error_body)
 
     async def passthrough():
         captured_usage: dict = {}
         captured_error: Optional[str] = None
         try:
             async for line in response.aiter_lines():
-                yield f"{line}\n"
                 stripped = line.strip()
+                normalized = _normalized_overflow_line(stripped)
+                if normalized is not None:
+                    captured_error = "context_length_exceeded"
+                    yield normalized
+                    continue
+                yield f"{line}\n"
                 if stripped.startswith("data: "):
                     payload = stripped[6:]
                 elif stripped.startswith("data:"):
@@ -237,8 +265,8 @@ async def _handle_streaming(
                 if not payload or payload == "[DONE]":
                     continue
                 try:
-                    evt = _json.loads(payload)
-                except _json.JSONDecodeError:
+                    evt = json.loads(payload)
+                except json.JSONDecodeError:
                     continue
                 if evt.get("type") == "response.completed":
                     captured_usage = evt.get("response", {}).get("usage", {}) or {}
@@ -255,3 +283,32 @@ async def _handle_streaming(
             )
 
     return StreamingResponse(passthrough(), media_type="text/event-stream")
+
+
+def _normalized_overflow_line(stripped: str) -> Optional[str]:
+    """A mid-stream overflow the upstream did not name, renamed; else None.
+
+    The Codex backend already ends an oversized turn with `response.failed`
+    carrying `code: context_length_exceeded`, and that line passes untouched.
+    An upstream that says it only in a sentence (Ollama's Responses route)
+    has its failure event rewritten into that same shape, so a Responses
+    caller reads one overflow whichever upstream is behind the model.
+    """
+    if not stripped.startswith("data:"):
+        return None
+    payload = stripped[5:].strip()
+    if not payload or payload == "[DONE]":
+        return None
+    try:
+        evt = json.loads(payload)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(evt, dict) or evt.get("type") not in ("response.failed", "error"):
+        return None
+    message = overflow_message(evt)
+    if not message:
+        return None
+    failure = (evt.get("response") or {}).get("error") if evt.get("type") == "response.failed" else evt.get("error")
+    if isinstance(failure, dict) and failure.get("code") == "context_length_exceeded":
+        return None
+    return f"data: {json.dumps(overflow_failed_event(message))}\n"
