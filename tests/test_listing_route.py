@@ -45,12 +45,13 @@ async def client(monkeypatch):
         await setup.flush()
         setup.add(
             Model(
+                context_window=200_000,
                 deployment_name="claude-only",
                 provider_id=provider.id,
                 harnesses="claude",
             )
         )
-        setup.add(Model(deployment_name="everyones", provider_id=provider.id))
+        setup.add(Model(context_window=200_000, deployment_name="everyones", provider_id=provider.id))
         messages_only = Provider(
             name="anthropic-ish",
             label="Messages only",
@@ -61,10 +62,11 @@ async def client(monkeypatch):
         setup.add(messages_only)
         await setup.flush()
         setup.add(
-            Model(deployment_name="messages-wire-only", provider_id=messages_only.id)
+            Model(context_window=200_000, deployment_name="messages-wire-only", provider_id=messages_only.id)
         )
         setup.add(
             Model(
+                context_window=200_000,
                 deployment_name="reserved",
                 provider_id=provider.id,
                 admin_only=True,

@@ -234,15 +234,17 @@ class Model(Base):
     cost_per_million_cache_read: Mapped[Optional[float]] = mapped_column(
         Numeric(10, 6), nullable=True
     )
-    # Total context this deployment accepts, in tokens. Null means nobody has
-    # declared it, and it is relayed as null rather than as a guess: a reader
-    # drawing a conversation's size against a window it invented reports a
-    # session at 40% that is actually at 95%. The proxy owns the model map, so
-    # this is the one place the number belongs — but it is the *deployment's*
-    # window, which is not always the running process's (a Claude harness
-    # spawned without the 1M pin holds 200k on a row that says 1000000), so a
-    # caller that can see the live conversation should prefer what it reports.
+    # Total context this deployment accepts, in tokens. A model with none is
+    # not offered on the listing at all: every conversation rotates at a
+    # percentage of this number, and one on a model nobody measured has no
+    # threshold to rotate at. Nullable in the schema only because rows
+    # predate the column; the admin form will not save a model without one.
     context_window: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    # Whether the deployment reads image input: True, False, or None for
+    # "nobody has said". Three states on purpose — a conversation holding
+    # images is handed over rather than resumed on a model that cannot read
+    # them, and only a declared answer may decide that a model can.
+    accepts_images: Mapped[Optional[bool]] = mapped_column(Boolean, nullable=True)
     # The reasoning-effort levels this deployment accepts, comma-separated in
     # the order a picker shows them. Null means the model takes no effort
     # setting, which is a fact about the model rather than an omission: a

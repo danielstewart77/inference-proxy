@@ -59,9 +59,16 @@
         <input type="text" id="ccr" name="cost_per_million_cache_read" placeholder="e.g. 0.500000">
       </div>
       <div>
-        <label for="ctxw">Context window (tokens, optional)</label>
-        <input type="number" min="1" id="ctxw" name="context_window" placeholder="e.g. 200000">
-        <small>Left blank, a conversation's fullness reads as unknown rather than being drawn against a guess.</small>
+        <label for="ctxw">Context window (tokens)</label>
+        <input type="number" min="1" id="ctxw" name="context_window" placeholder="e.g. 200000" required>
+      </div>
+      <div>
+        <label for="imgs">Accepts images</label>
+        <select id="imgs" name="accepts_images">
+          <option value="" selected>unknown</option>
+          <option value="yes">yes</option>
+          <option value="no">no</option>
+        </select>
       </div>
       <div>
         <label for="effort">Effort levels (optional)</label>

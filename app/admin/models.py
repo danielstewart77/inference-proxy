@@ -208,15 +208,15 @@ def _upstream_required(target_uri: Optional[str], provider_id: Optional[int]) ->
     return uri
 
 
-def _parse_context_window(raw: Optional[str]) -> Optional[int]:
-    """The model's context window, or None when nobody has declared it.
+def _parse_context_window(raw: Optional[str]) -> int:
+    """The model's context window, which every model must declare.
 
-    Blank stays None rather than becoming zero: the console divides a
-    conversation's size by this, and a zero denominator renders every
-    session as infinitely full while a null renders honestly as unknown.
+    Required rather than optional: every conversation rotates at a percentage
+    of the window of the model it is on, and a model saved without one is a
+    model nobody can pick.
     """
     if raw is None or raw.strip() == "":
-        return None
+        raise HTTPException(status_code=400, detail="context_window is required")
     try:
         value = int(raw.strip())
     except ValueError:
@@ -224,6 +224,20 @@ def _parse_context_window(raw: Optional[str]) -> Optional[int]:
     if value <= 0:
         raise HTTPException(status_code=400, detail="context_window must be positive")
     return value
+
+
+#: The three answers to "does this model read images", as the form spells them.
+_ACCEPTS_IMAGES = {"yes": True, "no": False, "": None, "unknown": None}
+
+
+def _parse_accepts_images(raw: Optional[str]) -> Optional[bool]:
+    """True, False, or None for unknown. An unrecognised answer is refused
+    rather than read as unknown, since a typo would otherwise erase a
+    declared capability."""
+    key = (raw or "").strip().lower()
+    if key not in _ACCEPTS_IMAGES:
+        raise HTTPException(status_code=400, detail=f"Invalid accepts_images: {raw!r}")
+    return _ACCEPTS_IMAGES[key]
 
 
 def _parse_decimal(raw: Optional[str]) -> Optional[Decimal]:
@@ -334,6 +348,7 @@ async def add_model(
     cost_per_million_cache_read: str = Form(""),
     context_window: str = Form(""),
     effort_levels: str = Form(""),
+    accepts_images: str = Form(""),
     enabled: str = Form("on"),
     admin_only: str = Form(""),
     session: AsyncSession = Depends(get_session),
@@ -381,6 +396,7 @@ async def add_model(
             cost_per_million_cache_read=_parse_decimal(cost_per_million_cache_read),
             context_window=_parse_context_window(context_window),
             effort_levels=_parse_effort_levels(effort_levels),
+            accepts_images=_parse_accepts_images(accepts_images),
         )
     )
     await session.commit()
@@ -405,6 +421,7 @@ async def update_model(
     cost_per_million_cache_read: str = Form(""),
     context_window: str = Form(""),
     effort_levels: str = Form(""),
+    accepts_images: str = Form(""),
     enabled: str = Form(""),  # checkbox: "on" if checked, "" if not
     admin_only: str = Form(""),  # checkbox: "on" if checked, "" if not
     session: AsyncSession = Depends(get_session),
@@ -435,6 +452,7 @@ async def update_model(
     target.admin_only = (admin_only == "on")
     target.context_window = _parse_context_window(context_window)
     target.effort_levels = _parse_effort_levels(effort_levels)
+    target.accepts_images = _parse_accepts_images(accepts_images)
     target.cost_per_million_input = _parse_decimal(cost_per_million_input)
     target.cost_per_million_output = _parse_decimal(cost_per_million_output)
     target.cost_per_million_cache_write = _parse_decimal(cost_per_million_cache_write)
