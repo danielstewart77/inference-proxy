@@ -53,6 +53,11 @@ OLLAMA_OVERFLOW = {
     }
 }
 
+#: Ollama's own envelope: the error is a bare sentence, with no code field at all.
+OLLAMA_BARE_OVERFLOW = {
+    "error": "The prompt is too long: 40961, model maximum context length: 40960"
+}
+
 #: The Codex backend's: already coded.
 CODEX_OVERFLOW = {
     "error": {
@@ -63,6 +68,11 @@ CODEX_OVERFLOW = {
         "code": "context_length_exceeded",
     }
 }
+
+
+def _message(refusal: dict) -> str:
+    error = refusal["error"]
+    return error if isinstance(error, str) else error["message"]
 
 
 class _FakeStream:
@@ -128,6 +138,48 @@ async def test_a_streamed_responses_turn_ends_with_the_upstreams_token_counts():
     assert chunks[-1]["choices"][0]["finish_reason"] == "stop"
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "reported",
+    [None, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}],
+    ids=["absent", "zero"],
+)
+async def test_a_streamed_responses_turn_with_no_real_count_ends_without_usage(reported):
+    """T1. Absent and zero are both "not measured". A zero on the last chunk is
+    read as an empty context, which never rotates."""
+    completed = {"status": "completed"}
+    if reported is not None:
+        completed["usage"] = reported
+    lines = _sse(
+        [
+            {"type": "response.output_text.delta", "delta": "hi"},
+            {"type": "response.completed", "response": completed},
+        ]
+    )
+
+    chunks = await _chunks(stream_responses_to_completions(_FakeStream(lines), "gpt-6-luna"))
+
+    assert chunks[-1]["choices"][0]["finish_reason"] == "stop"
+    assert "usage" not in chunks[-1]
+
+
+def test_a_translated_reply_whose_upstream_counted_zero_input_carries_no_usage():
+    """T1. Zero input is not a count; relayed, it reads as an empty context."""
+    out = transform_response_to_completions(
+        {
+            "id": "resp_1",
+            "status": "completed",
+            "output": [
+                {"type": "message", "content": [{"type": "output_text", "text": "hi"}]}
+            ],
+            "usage": {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
+        },
+        "gpt-6-luna",
+    )
+
+    assert "usage" not in out
+
+
 def test_a_translated_reply_whose_upstream_reported_no_usage_carries_none():
     """T1. A zero the upstream never sent is a measurement nobody took."""
     out = transform_response_to_completions(
@@ -171,6 +223,9 @@ async def test_an_overflow_mid_stream_on_the_responses_translation_is_named_as_o
     assert "data: [DONE]\n\n" not in raw
     last = json.loads(raw[-1][len("data: ") :])
     assert last["error"]["code"] == "context_length_exceeded"
+    # pi-ai keeps only the message of a mid-stream error, so the code has to
+    # survive inside it.
+    assert "context_length_exceeded" in last["error"]["message"]
 
 
 @pytest.mark.asyncio
@@ -195,6 +250,7 @@ async def test_a_claude_turn_that_runs_into_its_window_is_an_overflow_not_a_leng
 
     assert not [c for c in chunks if (c.get("choices") or [{}])[0].get("finish_reason")]
     assert chunks[-1]["error"]["code"] == "context_length_exceeded"
+    assert "context_length_exceeded" in chunks[-1]["error"]["message"]
     assert [c["usage"]["prompt_tokens"] for c in chunks if "usage" in c] == [999000]
 
 
@@ -275,7 +331,8 @@ def _upstream(status: int, body: dict):
 @pytest.mark.parametrize(
     "model, refusal",
     [("claude-opus-5", ANTHROPIC_OVERFLOW), ("gpt-6-sol", OLLAMA_OVERFLOW),
-     ("gpt-oss:120b-cloud", OLLAMA_OVERFLOW)],
+     ("gpt-oss:120b-cloud", OLLAMA_OVERFLOW),
+     ("gpt-oss:120b-cloud", OLLAMA_BARE_OVERFLOW)],
 )
 def test_an_overflow_refusal_reaches_a_chat_caller_named_as_one(
     client, monkeypatch, model, refusal, streaming
@@ -297,7 +354,7 @@ def test_an_overflow_refusal_reaches_a_chat_caller_named_as_one(
     assert response.status_code == 400
     error = response.json()["error"]
     assert error["code"] == "context_length_exceeded"
-    assert error["message"] == refusal["error"]["message"]
+    assert _message(refusal) in error["message"]
 
 
 def test_a_claude_reply_cut_off_by_its_window_reaches_a_chat_caller_as_an_overflow(
@@ -331,7 +388,7 @@ def test_a_claude_reply_cut_off_by_its_window_reaches_a_chat_caller_as_an_overfl
 
 
 @pytest.mark.parametrize("streaming", [False, True])
-@pytest.mark.parametrize("refusal", [CODEX_OVERFLOW, OLLAMA_OVERFLOW])
+@pytest.mark.parametrize("refusal", [CODEX_OVERFLOW, OLLAMA_OVERFLOW, OLLAMA_BARE_OVERFLOW])
 def test_an_overflow_refusal_reaches_a_responses_caller_named_as_one(
     client, monkeypatch, refusal, streaming
 ):
@@ -350,7 +407,7 @@ def test_an_overflow_refusal_reaches_a_responses_caller_named_as_one(
     assert response.status_code == 400
     error = response.json()["error"]
     assert error["code"] == "context_length_exceeded"
-    assert error["message"] == refusal["error"]["message"]
+    assert _message(refusal) in error["message"]
 
 
 def test_an_unnamed_overflow_mid_stream_reaches_a_responses_caller_named(

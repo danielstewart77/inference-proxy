@@ -87,7 +87,15 @@ def overflow_message(raw: object) -> Optional[str]:
 
 
 def overflow_error(message: str) -> dict:
-    """The OpenAI error object a caller reads an overflow out of."""
+    """The OpenAI error object a caller reads an overflow out of.
+
+    The code also leads the message. A chat client that surfaces a mid-stream
+    error keeps only its message — pi-ai drops `code` — so a code that lived
+    only in its own field would be gone by the time anything decided whether
+    to rotate.
+    """
+    if OVERFLOW_CODE not in message:
+        message = f"{OVERFLOW_CODE}: {message}"
     return {
         "message": message,
         "type": "invalid_request_error",
