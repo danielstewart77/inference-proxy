@@ -40,11 +40,14 @@ from app.deployments import (
 )
 from app.proxy.anthropic import anthropic_upstream_headers, apply_oauth_system_prompt
 from app.proxy.chat_to_anthropic import (
+    CONTEXT_OVERFLOW_STOP,
     UntranslatableRequest,
+    _as_count,
     stream_anthropic_to_completions,
     transform_anthropic_to_completions,
     transform_to_anthropic_messages,
 )
+from app.proxy.overflow import overflow_body, overflow_error, overflow_message
 from app.utils import log
 
 router = APIRouter()
@@ -256,12 +259,37 @@ def _map_finish_reason(status: str) -> str:
     return {"completed": "stop", "incomplete": "length", "cancelled": "stop"}.get(status, "stop")
 
 
-def _map_usage(responses_usage: dict) -> dict:
-    return {
-        "prompt_tokens": responses_usage.get("input_tokens", 0),
-        "completion_tokens": responses_usage.get("output_tokens", 0),
-        "total_tokens": responses_usage.get("total_tokens", 0),
+def _map_usage(responses_usage: object) -> Optional[dict]:
+    """The Responses API's usage block as an OpenAI `usage` object, or None.
+
+    The two wires agree on what the prompt total means — Responses'
+    `input_tokens` already includes the cached prefix, as `prompt_tokens`
+    does — so the figure is relayed as it came. What they must not disagree
+    on is absence: an upstream that reported nothing is relayed as nothing.
+    A fabricated zero is read by every consumer as a measurement, and a
+    conversation measured at zero is never rotated.
+    """
+    if not isinstance(responses_usage, dict):
+        return None
+    prompt = _as_count(responses_usage.get("input_tokens"))
+    if not prompt:
+        return None
+    completion = _as_count(responses_usage.get("output_tokens")) or 0
+    total = _as_count(responses_usage.get("total_tokens"))
+    usage: dict = {
+        "prompt_tokens": prompt,
+        "completion_tokens": completion,
+        "total_tokens": total if total is not None else prompt + completion,
     }
+    cached = _as_count((responses_usage.get("input_tokens_details") or {}).get("cached_tokens"))
+    if cached is not None:
+        usage["prompt_tokens_details"] = {"cached_tokens": cached}
+    reasoning = _as_count(
+        (responses_usage.get("output_tokens_details") or {}).get("reasoning_tokens")
+    )
+    if reasoning is not None:
+        usage["completion_tokens_details"] = {"reasoning_tokens": reasoning}
+    return usage
 
 
 def transform_response_to_completions(azure_response: dict, model: str) -> dict:
@@ -301,7 +329,7 @@ def transform_response_to_completions(azure_response: dict, model: str) -> dict:
     if tool_calls and finish_reason == "stop":
         finish_reason = "tool_calls"
 
-    return {
+    completion: dict = {
         "id": f"chatcmpl-{azure_response.get('id', uuid.uuid4().hex[:29])}",
         "object": "chat.completion",
         "created": int(time.time()),
@@ -313,8 +341,11 @@ def transform_response_to_completions(azure_response: dict, model: str) -> dict:
                 "finish_reason": finish_reason,
             }
         ],
-        "usage": _map_usage(azure_response.get("usage", {})),
     }
+    usage = _map_usage(azure_response.get("usage"))
+    if usage is not None:
+        completion["usage"] = usage
+    return completion
 
 
 async def stream_responses_to_completions(
@@ -444,11 +475,15 @@ async def stream_responses_to_completions(
             }
             yield f"data: {json.dumps(chunk)}\n\n"
 
-        elif event_type == "response.completed":
+        elif event_type in ("response.completed", "response.incomplete"):
+            # Both end a served turn: `incomplete` is the one that ran out of
+            # output budget, and it carries the counts just the same.
+            completed = event_data.get("response") or {}
             if usage_holder is not None:
-                u = event_data.get("response", {}).get("usage", {}) or {}
-                usage_holder.update(u)
-            status = (event_data.get("response") or {}).get("status", "completed")
+                usage_holder.update(completed.get("usage") or {})
+            status = completed.get("status") or (
+                "incomplete" if event_type == "response.incomplete" else "completed"
+            )
             finish_reason = _map_finish_reason(status)
             if saw_tool_call and finish_reason == "stop":
                 finish_reason = "tool_calls"
@@ -461,7 +496,34 @@ async def stream_responses_to_completions(
                     {"index": 0, "delta": {}, "finish_reason": finish_reason}
                 ],
             }
+            # The counts ride the finish chunk, and only when the upstream
+            # gave some: a caller sizing its conversation from this chunk
+            # reads a fabricated zero as an empty context.
+            reported = _map_usage(completed.get("usage"))
+            if reported is not None:
+                final["usage"] = reported
             yield f"data: {json.dumps(final)}\n\n"
+
+        elif event_type in ("response.failed", "error"):
+            # A turn that failed after the 200. Passed on in the shape an
+            # OpenAI client raises on — never followed by a terminator that
+            # says the turn completed — and an overflow named as one, so the
+            # caller rotates instead of retrying the same oversized prompt.
+            failure = (
+                (event_data.get("response") or {}).get("error")
+                if event_type == "response.failed"
+                else event_data.get("error")
+            )
+            if not isinstance(failure, dict):
+                failure = {"message": str(failure or "upstream stream error")}
+            overflow = overflow_message(failure)
+            error = overflow_error(overflow) if overflow else {
+                "message": failure.get("message") or "upstream stream error",
+                "type": failure.get("type") or "api_error",
+                "code": failure.get("code"),
+            }
+            yield f"data: {json.dumps({'error': error})}\n\n"
+            return
 
     yield "data: [DONE]\n\n"
 
@@ -732,6 +794,13 @@ def _upstream_error_response(status_code: int, raw: bytes | str) -> JSONResponse
     """
     if isinstance(raw, bytes):
         raw = raw.decode("utf-8", "replace")
+    overflow = overflow_message(raw)
+    if overflow:
+        # Overflow is the one refusal a caller acts on by itself — it rotates
+        # the conversation — so it is named the same way whatever dialect the
+        # upstream said it in. The upstream's sentence, numbers and all, rides
+        # as the message.
+        return JSONResponse(status_code=status_code, content=overflow_body(overflow))
     try:
         content = json.loads(raw)
     except (ValueError, json.JSONDecodeError):
@@ -782,6 +851,24 @@ async def _post_via_anthropic_translation(
         return _upstream_error_response(502, response.content)
 
     log(f"Response received: {len(response.content)} bytes")
+    if isinstance(result, dict) and result.get("stop_reason") == CONTEXT_OVERFLOW_STOP:
+        # The turn ran into the model's window mid-answer. Handed back as a
+        # `length` finish it reads as an answer cut short by `max_tokens`,
+        # which a caller retries unchanged; it is an overflow, and is named
+        # as one.
+        usage.schedule(
+            principal, request=request, model=target.name, endpoint=ENDPOINT_LABEL,
+            status_code=400, error_type="context_length_exceeded",
+            started_at=started_at,
+            azure_usage=_anthropic_usage_to_azure_usage(result.get("usage", {}) or {}),
+        )
+        return JSONResponse(
+            status_code=400,
+            content=overflow_body(
+                f"{target.name} reached its context window mid-turn "
+                f"(stop_reason {CONTEXT_OVERFLOW_STOP})"
+            ),
+        )
     usage.schedule(
         principal, request=request, model=target.name, endpoint=ENDPOINT_LABEL,
         status_code=200, started_at=started_at,
@@ -880,6 +967,11 @@ async def _post_native_chat_passthrough(
             error_type=f"upstream_{response.status_code}",
             started_at=started_at,
         )
+        overflow = overflow_message(response.content)
+        if overflow:
+            return JSONResponse(
+                status_code=response.status_code, content=overflow_body(overflow)
+            )
         try:
             return JSONResponse(status_code=response.status_code, content=response.json())
         except ValueError:
@@ -927,6 +1019,11 @@ async def _stream_native_chat_passthrough(
             error_type=f"upstream_{response.status_code}",
             started_at=started_at,
         )
+        overflow = overflow_message(error_body)
+        if overflow:
+            return JSONResponse(
+                status_code=response.status_code, content=overflow_body(overflow)
+            )
         try:
             content = json.loads(error_body)
         except (ValueError, json.JSONDecodeError):

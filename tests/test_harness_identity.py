@@ -50,7 +50,7 @@ async def client(monkeypatch):
         setup.add(provider)
         await setup.flush()
         setup.add(
-            Model(deployment_name="qwen35-dsh", provider_id=provider.id, harnesses="dsh")
+            Model(context_window=200_000, deployment_name="qwen35-dsh", provider_id=provider.id, harnesses="dsh")
         )
         responses_only = Provider(
             name="openai",
@@ -62,7 +62,7 @@ async def client(monkeypatch):
         setup.add(responses_only)
         await setup.flush()
         setup.add(
-            Model(deployment_name="gpt-dsh", provider_id=responses_only.id, harnesses="dsh")
+            Model(context_window=200_000, deployment_name="gpt-dsh", provider_id=responses_only.id, harnesses="dsh")
         )
         await setup.commit()
 

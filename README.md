@@ -122,9 +122,10 @@ Anything that speaks OpenAI does the same with `OPENAI_BASE_URL` and
 `OPENAI_API_KEY`. Keys are accepted as `Authorization: Bearer`, `api-key`, or
 `x-api-key`, so a client sends whichever its SDK already sends.
 
-`GET /v1/models` lists the OpenAI-shaped deployments and
-`GET /v1/anthropic/models` the Anthropic ones; both require a valid proxy key
-and hide admin-only rows from unprivileged clients. `GET /health` is
+`GET /v1/models` lists every deployment, and `?harness=claude|codex|dsh`
+narrows it to what that harness can send; it requires a valid proxy key and
+hides admin-only rows from unprivileged clients. `GET /v1/anthropic/models` is
+retired and answers 410. `GET /health` is
 unauthenticated, and `/status` is a public health and throughput page carrying
 no per-client detail.
 
@@ -156,18 +157,25 @@ Every reading carries its age and goes `stale` on its own.
 The store is in-memory and per-process: it holds the last thing this proxy
 observed, not a ledger. `usage_log` is the ledger.
 
-## Context windows
+## Context windows and rotation thresholds
 
 `models.context_window` is how many tokens a deployment accepts. The proxy
 owns the model map, so this is where the number belongs — a reader asking
 "how full is this conversation" has one place to learn the denominator.
 
-Null means nobody has declared it, and it is relayed as null rather than as a
-guess: a conversation drawn against an invented window renders at 40% when it
-is at 95%. Note that this is the *deployment's* window, which is not always
-the running process's — a Claude harness spawned without the long-context pin
-holds 200k on a row that says a million — so a caller that can see the live
-conversation should prefer what that conversation reports.
+`models.rotation_threshold_percent` is the percentage of that window at which
+a conversation on the model rotates, an integer from 1 to 99. It is a property
+of the model, not of any mind, so it sits on the same row as the window it is
+a fraction of.
+
+Both are required on the admin add and edit forms (the add form offers 30% as
+the threshold), and every `/v1/models` entry carries both as
+`context_window` and `rotation_threshold_percent`. A row with no window is not
+listed at all: a conversation on it would have nothing to rotate at. Note that
+the window is the *deployment's*, which is not always the running process's —
+a Claude harness spawned without the long-context pin holds 200k on a row that
+says a million — so a caller that can see the live conversation should prefer
+what that conversation reports.
 
 ## Layout
 

@@ -457,6 +457,11 @@ async def listing_for(
             ]
         if not wires:
             continue
+        if not row.context_window:
+            # Unpickable rather than listed as unknown: a conversation rotates
+            # at a percentage of the window of the model it is on, and a model
+            # with no window gives it nothing to rotate at.
+            continue
         provider = row.provider
         data.append(
             {
@@ -469,11 +474,14 @@ async def listing_for(
                 "label": row.label,
                 "description": row.description,
                 "wires": wires,
-                # Null when undeclared, and deliberately not coerced: a
-                # caller drawing a fullness bar needs "unknown" to stay
-                # distinguishable from a real window, or it draws a
-                # conversation against a denominator nobody set.
                 "context_window": row.context_window,
+                # The percentage of that window a conversation on this model
+                # rotates at — the model's figure, never a mind's.
+                "rotation_threshold_percent": row.rotation_threshold_percent,
+                # True, False, or null for "nobody has said" — never coerced,
+                # since a caller deciding whether a conversation's images
+                # survive a switch must be able to tell unknown from no.
+                "accepts_images": row.accepts_images,
                 # Always a list, empty when the model takes no effort: a
                 # surface asks "which levels" and an empty answer is the
                 # whole of "none".

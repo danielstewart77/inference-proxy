@@ -758,18 +758,6 @@ def test_a_refused_generation_is_not_reported_as_a_finished_one():
     assert out["choices"][0]["finish_reason"] == "content_filter"
 
 
-def test_running_out_of_context_is_reported_as_a_length_stop():
-    out = transform_anthropic_to_completions(
-        {
-            "content": [{"type": "text", "text": "x"}],
-            "stop_reason": "model_context_window_exceeded",
-        },
-        "claude-opus-5",
-    )
-
-    assert out["choices"][0]["finish_reason"] == "length"
-
-
 @pytest.mark.asyncio
 async def test_a_stream_cut_mid_tool_call_is_not_reported_as_a_finished_call():
     """A truncated stream looks identical to a finished one at end of iteration.

@@ -4,8 +4,9 @@ The parse is covered in `test_provider_limits.py`. What these pin is the
 part a console actually consumes: that the reading is attributed to the
 right provider row, that a provider nobody has called is reported as *not
 reporting* rather than as idle at zero, that the route refuses an unknown
-key, and that a model's declared context window is relayed — including the
-null that means nobody declared one.
+key, that a model's declared context window and image capability are
+relayed beside the percentage of it a conversation rotates at, and that a
+model with no window is offered to nobody.
 """
 
 from __future__ import annotations
@@ -69,12 +70,26 @@ async def client(monkeypatch):
                     provider_id=anthropic.id,
                     enabled=True,
                     context_window=1_000_000,
+                    accepts_images=True,
                 ),
                 Model(
                     deployment_name="gpt-5.6",
                     provider_id=openai.id,
                     enabled=True,
+                    context_window=400_000,
+                    accepts_images=False,
+                ),
+                Model(
+                    deployment_name="claude-unsized",
+                    provider_id=anthropic.id,
+                    enabled=True,
                     context_window=None,
+                ),
+                Model(
+                    deployment_name="claude-unsurveyed",
+                    provider_id=anthropic.id,
+                    enabled=True,
+                    context_window=200_000,
                 ),
             ]
         )
@@ -154,12 +169,26 @@ def test_the_listing_relays_a_declared_context_window(client):
     assert models["claude-opus-5"]["context_window"] == 1_000_000
 
 
-def test_an_undeclared_context_window_relays_as_null_not_zero(client):
-    """Requirement 10c. Null is what lets a reader render 'unknown'; a zero
-    would be divided into and render every conversation as infinitely full."""
+@pytest.mark.parametrize("harness", [None, "claude", "dsh"])
+def test_a_model_with_no_context_window_is_offered_to_no_caller(client, harness):
+    """R2 / T2. A conversation rotates at a percentage of its model's window,
+    so a model nobody measured has no threshold and cannot be picked — not by
+    the unfiltered union, and not by a harness that names itself."""
+    url = "/v1/models" if harness is None else f"/v1/models?harness={harness}"
+    offered = {m["id"] for m in client.get(url).json()["data"]}
+
+    assert "claude-unsized" not in offered
+    assert "claude-opus-5" in offered
+
+
+def test_whether_a_model_reads_images_is_relayed_in_three_states(client):
+    """T3. Unknown stays distinguishable from no: only a declared answer may
+    decide that a conversation's images survive a switch."""
     models = {m["id"]: m for m in client.get("/v1/models").json()["data"]}
 
-    assert models["gpt-5.6"]["context_window"] is None
+    assert models["claude-opus-5"]["accepts_images"] is True
+    assert models["gpt-5.6"]["accepts_images"] is False
+    assert models["claude-unsurveyed"]["accepts_images"] is None
 
 
 def test_a_stale_reading_is_reported_as_stale_over_the_wire(client, monkeypatch):
@@ -214,6 +243,7 @@ def test_a_context_window_can_be_set_and_comes_back_on_the_listing(client, monke
             "cost_per_million_cache_write": "",
             "cost_per_million_cache_read": "",
             "context_window": "393216",
+            "rotation_threshold_percent": "30",
             "enabled": "on",
         },
         follow_redirects=False,
@@ -224,13 +254,67 @@ def test_a_context_window_can_be_set_and_comes_back_on_the_listing(client, monke
     assert models["claude-opus-5"]["context_window"] == 393216
 
 
-def test_a_blank_context_window_stays_null_rather_than_becoming_zero(client):
-    """Zero is a denominator. Blank is the absence of one, and the page
-    renders them differently on purpose."""
-    from app.admin.models import _parse_context_window
+def test_an_edit_without_a_context_window_is_refused_and_keeps_the_old_one(
+    client, monkeypatch,
+):
+    """R2. Blanking the window would make the model unpickable without anyone
+    deciding it should be."""
+    response = _post_model(client, monkeypatch, context_window="")
 
-    assert _parse_context_window("") is None
-    assert _parse_context_window("   ") is None
+    assert response.status_code == 400
+    models = {m["id"]: m for m in client.get("/v1/models").json()["data"]}
+    assert models["claude-opus-5"]["context_window"] == 1_000_000
+
+
+def test_a_model_cannot_be_added_without_a_context_window(client, monkeypatch):
+    """R2. The add form is where every new model gets its window."""
+    response = _add_model(client, monkeypatch, deployment_name="claude-new",
+                          context_window="")
+
+    assert response.status_code == 400
+    rows = client.get("/v1/models").json()["data"]
+    assert "claude-new" not in {m["id"] for m in rows}
+
+
+@pytest.mark.parametrize("answer, expected", [("yes", True), ("no", False), ("", None)])
+def test_the_admin_form_sets_whether_a_model_reads_images(
+    client, monkeypatch, answer, expected,
+):
+    """T3. Without a write path the column is null forever."""
+    _post_model(client, monkeypatch, model_id=2, provider_id="2",
+                context_window="400000", accepts_images=answer)
+
+    models = {m["id"]: m for m in client.get("/v1/models").json()["data"]}
+    assert models["gpt-5.6"]["accepts_images"] is expected
+
+
+def test_a_new_model_comes_back_on_the_listing_with_its_image_answer(
+    client, monkeypatch,
+):
+    response = _add_model(client, monkeypatch, deployment_name="claude-new",
+                          context_window="200000", accepts_images="yes")
+
+    assert response.status_code in (303, 302)
+    models = {m["id"]: m for m in client.get("/v1/models").json()["data"]}
+    assert models["claude-new"]["accepts_images"] is True
+
+
+def _add_model(client, monkeypatch, **fields):
+    async def _allow(request):
+        return None
+
+    monkeypatch.setattr("app.admin.models.require_html_admin", _allow)
+    data = {
+        "deployment_name": "claude-new", "target_uri": "", "provider_id": "1",
+        "harnesses": "", "credential_id": "", "api_version": "",
+        "auth_scheme": "bearer", "label": "", "description": "",
+        "cost_per_million_input": "", "cost_per_million_output": "",
+        "cost_per_million_cache_write": "", "cost_per_million_cache_read": "",
+        "context_window": "200000", "rotation_threshold_percent": "30",
+        "effort_levels": "", "enabled": "on",
+    }
+    data.update(fields)
+    return client.post("/admin/models", data=data, follow_redirects=False)
 
 
 def _post_model(client, monkeypatch, model_id=1, **fields):
@@ -243,7 +327,8 @@ def _post_model(client, monkeypatch, model_id=1, **fields):
         "api_version": "", "auth_scheme": "bearer", "label": "", "description": "",
         "cost_per_million_input": "", "cost_per_million_output": "",
         "cost_per_million_cache_write": "", "cost_per_million_cache_read": "",
-        "context_window": "", "effort_levels": "", "enabled": "on",
+        "context_window": "1000000", "rotation_threshold_percent": "30",
+        "effort_levels": "", "enabled": "on",
     }
     data.update(fields)
     return client.post(f"/admin/models/{model_id}", data=data, follow_redirects=False)
@@ -281,7 +366,7 @@ def test_each_harness_is_offered_only_the_effort_words_it_accepts(client, monkey
     rejects, stored on a conversation, breaks every respawn after it."""
     _post_model(client, monkeypatch, effort_levels="minimal, low, high, max")
     _post_model(client, monkeypatch, model_id=2, provider_id="2",
-                effort_levels="minimal, low, high, max")
+                context_window="400000", effort_levels="minimal, low, high, max")
 
     def levels(harness, model):
         rows = client.get(f"/v1/models?harness={harness}").json()["data"]
@@ -308,9 +393,81 @@ def test_effort_levels_set_when_a_model_is_added_come_back_on_the_listing(
         "auth_scheme": "bearer", "label": "", "description": "",
         "cost_per_million_input": "", "cost_per_million_output": "",
         "cost_per_million_cache_write": "", "cost_per_million_cache_read": "",
-        "context_window": "", "effort_levels": "low, high", "enabled": "on",
+        "context_window": "200000", "rotation_threshold_percent": "30",
+        "effort_levels": "low, high", "enabled": "on",
     }, follow_redirects=False)
 
     assert response.status_code in (303, 302)
     models = {m["id"]: m for m in client.get("/v1/models").json()["data"]}
     assert models["claude-new"]["effort_levels"] == ["low", "high"]
+
+
+def test_a_rotation_threshold_set_on_the_edit_form_comes_back_on_the_harness_listing(
+    client, monkeypatch,
+):
+    """The threshold is the model's, so the minds read it off the same row as
+    the window it is a percentage of."""
+    response = _post_model(client, monkeypatch, rotation_threshold_percent="45")
+
+    assert response.status_code in (303, 302)
+    rows = client.get("/v1/models?harness=claude").json()["data"]
+    model = {m["id"]: m for m in rows}["claude-opus-5"]
+    assert model["context_window"] == 1_000_000
+    assert model["rotation_threshold_percent"] == 45
+
+
+def test_a_rotation_threshold_set_when_a_model_is_added_comes_back_on_the_listing(
+    client, monkeypatch,
+):
+    response = _add_model(client, monkeypatch, deployment_name="claude-new",
+                          rotation_threshold_percent="60")
+
+    assert response.status_code in (303, 302)
+    models = {m["id"]: m for m in client.get("/v1/models").json()["data"]}
+    assert models["claude-new"]["rotation_threshold_percent"] == 60
+
+
+def test_a_model_cannot_be_added_without_a_rotation_threshold(client, monkeypatch):
+    response = _add_model(client, monkeypatch, deployment_name="claude-new",
+                          rotation_threshold_percent="")
+
+    assert response.status_code == 400
+    rows = client.get("/v1/models").json()["data"]
+    assert "claude-new" not in {m["id"] for m in rows}
+
+
+@pytest.mark.parametrize("raw", ["", "0", "100", "thirty"])
+def test_an_edit_with_a_missing_or_out_of_range_threshold_is_refused_and_keeps_the_old_one(
+    client, monkeypatch, raw,
+):
+    """Zero rotates every turn and a hundred never rotates before the overflow."""
+    _post_model(client, monkeypatch, rotation_threshold_percent="45")
+
+    response = _post_model(client, monkeypatch, rotation_threshold_percent=raw)
+
+    assert response.status_code == 400
+    models = {m["id"]: m for m in client.get("/v1/models").json()["data"]}
+    assert models["claude-opus-5"]["rotation_threshold_percent"] == 45
+
+
+@pytest.mark.parametrize("raw", ["1", "99"])
+def test_the_ends_of_the_threshold_range_are_accepted(client, monkeypatch, raw):
+    response = _post_model(client, monkeypatch, rotation_threshold_percent=raw)
+
+    assert response.status_code in (303, 302)
+    models = {m["id"]: m for m in client.get("/v1/models").json()["data"]}
+    assert models["claude-opus-5"]["rotation_threshold_percent"] == int(raw)
+
+
+def test_the_add_form_offers_thirty_percent_as_the_rotation_threshold(client, monkeypatch):
+    async def _allow(request):
+        return None
+
+    monkeypatch.setattr("app.admin.models.require_html_admin", _allow)
+    html = client.get("/admin/models/_add-form").text
+
+    field = next(
+        line for line in html.splitlines() if 'name="rotation_threshold_percent"' in line
+    )
+    assert 'value="30"' in field
+    assert "required" in field
