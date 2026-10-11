@@ -240,6 +240,13 @@ class Model(Base):
     # threshold to rotate at. Nullable in the schema only because rows
     # predate the column; the admin form will not save a model without one.
     context_window: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    # The percentage of context_window at which a conversation on this model
+    # rotates, 1..99. A property of the model rather than of any mind, so it
+    # lives beside the window it is a fraction of. Rows that predate the
+    # column were backfilled to 30; the admin form requires it on every save.
+    rotation_threshold_percent: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=30, server_default="30"
+    )
     # Whether the deployment reads image input: True, False, or None for
     # "nobody has said". Three states on purpose — a conversation holding
     # images is handed over rather than resumed on a model that cannot read

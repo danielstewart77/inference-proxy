@@ -475,6 +475,9 @@ async def listing_for(
                 "description": row.description,
                 "wires": wires,
                 "context_window": row.context_window,
+                # The percentage of that window a conversation on this model
+                # rotates at — the model's figure, never a mind's.
+                "rotation_threshold_percent": row.rotation_threshold_percent,
                 # True, False, or null for "nobody has said" — never coerced,
                 # since a caller deciding whether a conversation's images
                 # survive a switch must be able to tell unknown from no.

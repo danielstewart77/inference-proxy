@@ -226,6 +226,25 @@ def _parse_context_window(raw: Optional[str]) -> int:
     return value
 
 
+def _parse_rotation_threshold(raw: Optional[str]) -> int:
+    """The percentage of the context window a conversation on this model
+    rotates at. Required like the window itself, and held to 1..99: zero
+    rotates every turn and a hundred never rotates before the overflow."""
+    if raw is None or raw.strip() == "":
+        raise HTTPException(status_code=400, detail="rotation_threshold_percent is required")
+    try:
+        value = int(raw.strip())
+    except ValueError:
+        raise HTTPException(
+            status_code=400, detail=f"Invalid rotation threshold: {raw!r}"
+        )
+    if not 1 <= value <= 99:
+        raise HTTPException(
+            status_code=400, detail="rotation_threshold_percent must be between 1 and 99"
+        )
+    return value
+
+
 #: The three answers to "does this model read images", as the form spells them.
 _ACCEPTS_IMAGES = {"yes": True, "no": False, "": None, "unknown": None}
 
@@ -347,6 +366,7 @@ async def add_model(
     cost_per_million_cache_write: str = Form(""),
     cost_per_million_cache_read: str = Form(""),
     context_window: str = Form(""),
+    rotation_threshold_percent: str = Form(""),
     effort_levels: str = Form(""),
     accepts_images: str = Form(""),
     enabled: str = Form("on"),
@@ -395,6 +415,7 @@ async def add_model(
             cost_per_million_cache_write=_parse_decimal(cost_per_million_cache_write),
             cost_per_million_cache_read=_parse_decimal(cost_per_million_cache_read),
             context_window=_parse_context_window(context_window),
+            rotation_threshold_percent=_parse_rotation_threshold(rotation_threshold_percent),
             effort_levels=_parse_effort_levels(effort_levels),
             accepts_images=_parse_accepts_images(accepts_images),
         )
@@ -420,6 +441,7 @@ async def update_model(
     cost_per_million_cache_write: str = Form(""),
     cost_per_million_cache_read: str = Form(""),
     context_window: str = Form(""),
+    rotation_threshold_percent: str = Form(""),
     effort_levels: str = Form(""),
     accepts_images: str = Form(""),
     enabled: str = Form(""),  # checkbox: "on" if checked, "" if not
@@ -451,6 +473,7 @@ async def update_model(
     target.enabled = (enabled == "on")
     target.admin_only = (admin_only == "on")
     target.context_window = _parse_context_window(context_window)
+    target.rotation_threshold_percent = _parse_rotation_threshold(rotation_threshold_percent)
     target.effort_levels = _parse_effort_levels(effort_levels)
     target.accepts_images = _parse_accepts_images(accepts_images)
     target.cost_per_million_input = _parse_decimal(cost_per_million_input)

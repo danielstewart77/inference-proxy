@@ -61,6 +61,10 @@
         <input type="number" min="1" name="context_window" value="{{ m.context_window if m.context_window is not none else '' }}" required>
       </div>
       <div>
+        <label>Rotation threshold (% of window)</label>
+        <input type="number" min="1" max="99" name="rotation_threshold_percent" value="{{ m.rotation_threshold_percent }}" required>
+      </div>
+      <div>
         <label>Accepts images</label>
         <select name="accepts_images">
           <option value="" {% if m.accepts_images is none %}selected{% endif %}>unknown</option>

@@ -5,7 +5,8 @@ part a console actually consumes: that the reading is attributed to the
 right provider row, that a provider nobody has called is reported as *not
 reporting* rather than as idle at zero, that the route refuses an unknown
 key, that a model's declared context window and image capability are
-relayed, and that a model with no window is offered to nobody.
+relayed beside the percentage of it a conversation rotates at, and that a
+model with no window is offered to nobody.
 """
 
 from __future__ import annotations
@@ -242,6 +243,7 @@ def test_a_context_window_can_be_set_and_comes_back_on_the_listing(client, monke
             "cost_per_million_cache_write": "",
             "cost_per_million_cache_read": "",
             "context_window": "393216",
+            "rotation_threshold_percent": "30",
             "enabled": "on",
         },
         follow_redirects=False,
@@ -308,7 +310,8 @@ def _add_model(client, monkeypatch, **fields):
         "auth_scheme": "bearer", "label": "", "description": "",
         "cost_per_million_input": "", "cost_per_million_output": "",
         "cost_per_million_cache_write": "", "cost_per_million_cache_read": "",
-        "context_window": "200000", "effort_levels": "", "enabled": "on",
+        "context_window": "200000", "rotation_threshold_percent": "30",
+        "effort_levels": "", "enabled": "on",
     }
     data.update(fields)
     return client.post("/admin/models", data=data, follow_redirects=False)
@@ -324,7 +327,8 @@ def _post_model(client, monkeypatch, model_id=1, **fields):
         "api_version": "", "auth_scheme": "bearer", "label": "", "description": "",
         "cost_per_million_input": "", "cost_per_million_output": "",
         "cost_per_million_cache_write": "", "cost_per_million_cache_read": "",
-        "context_window": "1000000", "effort_levels": "", "enabled": "on",
+        "context_window": "1000000", "rotation_threshold_percent": "30",
+        "effort_levels": "", "enabled": "on",
     }
     data.update(fields)
     return client.post(f"/admin/models/{model_id}", data=data, follow_redirects=False)
@@ -389,9 +393,81 @@ def test_effort_levels_set_when_a_model_is_added_come_back_on_the_listing(
         "auth_scheme": "bearer", "label": "", "description": "",
         "cost_per_million_input": "", "cost_per_million_output": "",
         "cost_per_million_cache_write": "", "cost_per_million_cache_read": "",
-        "context_window": "200000", "effort_levels": "low, high", "enabled": "on",
+        "context_window": "200000", "rotation_threshold_percent": "30",
+        "effort_levels": "low, high", "enabled": "on",
     }, follow_redirects=False)
 
     assert response.status_code in (303, 302)
     models = {m["id"]: m for m in client.get("/v1/models").json()["data"]}
     assert models["claude-new"]["effort_levels"] == ["low", "high"]
+
+
+def test_a_rotation_threshold_set_on_the_edit_form_comes_back_on_the_harness_listing(
+    client, monkeypatch,
+):
+    """The threshold is the model's, so the minds read it off the same row as
+    the window it is a percentage of."""
+    response = _post_model(client, monkeypatch, rotation_threshold_percent="45")
+
+    assert response.status_code in (303, 302)
+    rows = client.get("/v1/models?harness=claude").json()["data"]
+    model = {m["id"]: m for m in rows}["claude-opus-5"]
+    assert model["context_window"] == 1_000_000
+    assert model["rotation_threshold_percent"] == 45
+
+
+def test_a_rotation_threshold_set_when_a_model_is_added_comes_back_on_the_listing(
+    client, monkeypatch,
+):
+    response = _add_model(client, monkeypatch, deployment_name="claude-new",
+                          rotation_threshold_percent="60")
+
+    assert response.status_code in (303, 302)
+    models = {m["id"]: m for m in client.get("/v1/models").json()["data"]}
+    assert models["claude-new"]["rotation_threshold_percent"] == 60
+
+
+def test_a_model_cannot_be_added_without_a_rotation_threshold(client, monkeypatch):
+    response = _add_model(client, monkeypatch, deployment_name="claude-new",
+                          rotation_threshold_percent="")
+
+    assert response.status_code == 400
+    rows = client.get("/v1/models").json()["data"]
+    assert "claude-new" not in {m["id"] for m in rows}
+
+
+@pytest.mark.parametrize("raw", ["", "0", "100", "thirty"])
+def test_an_edit_with_a_missing_or_out_of_range_threshold_is_refused_and_keeps_the_old_one(
+    client, monkeypatch, raw,
+):
+    """Zero rotates every turn and a hundred never rotates before the overflow."""
+    _post_model(client, monkeypatch, rotation_threshold_percent="45")
+
+    response = _post_model(client, monkeypatch, rotation_threshold_percent=raw)
+
+    assert response.status_code == 400
+    models = {m["id"]: m for m in client.get("/v1/models").json()["data"]}
+    assert models["claude-opus-5"]["rotation_threshold_percent"] == 45
+
+
+@pytest.mark.parametrize("raw", ["1", "99"])
+def test_the_ends_of_the_threshold_range_are_accepted(client, monkeypatch, raw):
+    response = _post_model(client, monkeypatch, rotation_threshold_percent=raw)
+
+    assert response.status_code in (303, 302)
+    models = {m["id"]: m for m in client.get("/v1/models").json()["data"]}
+    assert models["claude-opus-5"]["rotation_threshold_percent"] == int(raw)
+
+
+def test_the_add_form_offers_thirty_percent_as_the_rotation_threshold(client, monkeypatch):
+    async def _allow(request):
+        return None
+
+    monkeypatch.setattr("app.admin.models.require_html_admin", _allow)
+    html = client.get("/admin/models/_add-form").text
+
+    field = next(
+        line for line in html.splitlines() if 'name="rotation_threshold_percent"' in line
+    )
+    assert 'value="30"' in field
+    assert "required" in field

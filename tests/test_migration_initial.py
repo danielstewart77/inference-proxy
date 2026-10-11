@@ -121,3 +121,37 @@ def test_a_custom_upstream_path_keeps_its_own_uri(tmp_path):
     assert row.provider_id is None
     assert row.target_uri == "https://vendor.example/infer"
     assert providers == 0
+
+
+def test_existing_models_are_backfilled_to_a_thirty_percent_rotation_threshold(tmp_path):
+    """Every row that predates the column is listed with a threshold, so it
+    must arrive with one rather than as null."""
+    db = tmp_path / "proxy.db"
+    cfg = AlembicConfig(str(REPO_ROOT / "alembic.ini"))
+    cfg.set_main_option("script_location", str(REPO_ROOT / "migrations"))
+    cfg.set_main_option("sqlalchemy.url", f"sqlite:///{db}")
+    command.upgrade(cfg, "0007_model_accepts_images")
+
+    engine = create_engine(f"sqlite:///{db}")
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                "INSERT INTO models (deployment_name, target_uri, auth_scheme,"
+                " enabled, admin_only, context_window) VALUES"
+                " ('old', 'https://vendor.example/v1/messages', 'bearer', 1, 0, 200000)"
+            )
+        )
+    engine.dispose()
+
+    command.upgrade(cfg, "head")
+
+    engine = create_engine(f"sqlite:///{db}")
+    try:
+        with engine.begin() as conn:
+            value = conn.execute(
+                text("SELECT rotation_threshold_percent FROM models WHERE deployment_name='old'")
+            ).scalar_one()
+    finally:
+        engine.dispose()
+
+    assert value == 30

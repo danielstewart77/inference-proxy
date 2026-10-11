@@ -63,6 +63,10 @@
         <input type="number" min="1" id="ctxw" name="context_window" placeholder="e.g. 200000" required>
       </div>
       <div>
+        <label for="rotpct">Rotation threshold (% of window)</label>
+        <input type="number" min="1" max="99" id="rotpct" name="rotation_threshold_percent" value="30" required>
+      </div>
+      <div>
         <label for="imgs">Accepts images</label>
         <select id="imgs" name="accepts_images">
           <option value="" selected>unknown</option>
