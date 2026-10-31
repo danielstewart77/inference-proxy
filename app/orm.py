@@ -153,6 +153,10 @@ class Provider(Base):
     chat_completions_path: Mapped[Optional[str]] = mapped_column(
         Unicode(256), nullable=True
     )
+    # The decision wire. NULL is a provider that does not serve it, which
+    # refuses the request rather than sending a decision call to an endpoint
+    # that would answer it as chat.
+    systemone_path: Mapped[Optional[str]] = mapped_column(Unicode(256), nullable=True)
     credential_id: Mapped[Optional[int]] = mapped_column(
         Integer, ForeignKey("credentials.id", ondelete="SET NULL"), nullable=True
     )
@@ -172,6 +176,7 @@ class Provider(Base):
             "anthropic_messages": self.messages_path,
             "openai_responses": self.responses_path,
             "chat_completions": self.chat_completions_path,
+            "systemone": self.systemone_path,
         }.get(wire)
 
 
