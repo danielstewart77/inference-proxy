@@ -32,7 +32,7 @@ from app.config import config
 from app.db import SessionLocal, get_session
 from app.deployments import listing_for, provider_limits_report
 from app.orm import Model
-from app.proxy import anthropic, chat_completions, compact, responses
+from app.proxy import anthropic, chat_completions, compact, responses, systemone
 from app.proxy import websocket as ws_router
 from app.retention import usage_prune_loop
 from app.status import connectivity_probe_loop
@@ -197,6 +197,7 @@ def create_app() -> FastAPI:
     app.include_router(chat_completions.router)
     app.include_router(responses.router)
     app.include_router(compact.router)
+    app.include_router(systemone.router)
     app.include_router(anthropic.router)
     app.include_router(ws_router.router)
 
