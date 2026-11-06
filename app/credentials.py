@@ -43,6 +43,7 @@ import httpx
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.orm import Credential
+from app.timeutil import as_utc, utcnow
 
 # Public client id used by the Claude CLI's OAuth flow. Overridable so a
 # different registered client can be used without a code change.
@@ -72,7 +73,15 @@ class CredentialError(RuntimeError):
 
 
 def _now() -> datetime:
-    return datetime.now(timezone.utc).replace(tzinfo=None)
+    """Now, aware UTC.
+
+    It used to strip the timezone. Against a `timestamptz` column that is not
+    a cosmetic difference: asyncpg encodes a naive datetime as the client
+    process' local wall clock, so an expiry written from a host west of UTC
+    landed hours in the future and every token read as fresh long after it
+    had died.
+    """
+    return utcnow()
 
 
 def _read_json(path: str) -> dict:
@@ -98,7 +107,6 @@ def read_anthropic_oauth_file(path: str) -> tuple[str, str, Optional[datetime]]:
     if raw_expiry:
         # The CLI stores epoch milliseconds.
         expires_at = datetime.fromtimestamp(int(raw_expiry) / 1000, tz=timezone.utc)
-        expires_at = expires_at.replace(tzinfo=None)
     return access, refresh, expires_at
 
 
@@ -116,7 +124,7 @@ def _jwt_expiry(token: str) -> Optional[datetime]:
     exp = _jwt_claims(token).get("exp")
     if exp is None:
         return None
-    return datetime.fromtimestamp(int(exp), tz=timezone.utc).replace(tzinfo=None)
+    return datetime.fromtimestamp(int(exp), tz=timezone.utc)
 
 
 def codex_account_id(token: str) -> Optional[str]:
@@ -221,9 +229,16 @@ async def refresh_anthropic_token(refresh_token: str) -> tuple[str, datetime]:
 
 
 def _is_fresh(cred: Credential) -> bool:
+    """Whether `cred`'s cached access token is still worth sending.
+
+    `expires_at` arrives aware from Postgres and naive from SQLite, so it is
+    coerced before being compared. Comparing the two shapes directly raises,
+    which on Postgres was every read.
+    """
     if not cred.access_token or cred.expires_at is None:
         return False
-    return cred.expires_at - timedelta(seconds=REFRESH_SKEW_SECONDS) > _now()
+    expires_at = as_utc(cred.expires_at)
+    return expires_at - timedelta(seconds=REFRESH_SKEW_SECONDS) > _now()
 
 
 async def resolve_secret(session: AsyncSession, cred: Optional[Credential]) -> str:

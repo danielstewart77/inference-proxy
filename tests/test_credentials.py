@@ -58,7 +58,7 @@ def _write_codex_file(
 
 
 def _write_claude_file(tmp_path, *, expires_in_seconds: int) -> str:
-    expiry = datetime.now(timezone.utc).replace(tzinfo=None) + timedelta(
+    expiry = datetime.now(timezone.utc) + timedelta(
         seconds=expires_in_seconds
     )
     path = tmp_path / "credentials.json"
@@ -103,7 +103,8 @@ def test_reads_codex_oauth_tokens_with_jwt_expiry(tmp_path):
     path = _write_codex_file(tmp_path, expires_in_seconds=3600)
     access, refresh, expires_at = read_codex_oauth_tokens(path)
     assert refresh == "codex-refresh"
-    assert expires_at is not None and expires_at > creds._now()
+    assert expires_at is not None
+    assert expires_at > datetime.now(timezone.utc)
 
 
 def test_codex_file_without_tokens_raises(tmp_path):
@@ -156,7 +157,7 @@ async def test_fresh_cached_token_is_reused_without_touching_the_file(session, t
         kind="anthropic_oauth",
         source_path=str(tmp_path / "does-not-exist.json"),
         access_token="cached-token",
-        expires_at=creds._now() + timedelta(hours=2),
+        expires_at=datetime.now(timezone.utc) + timedelta(hours=2),
     )
     session.add(cred)
     await session.commit()
@@ -171,7 +172,7 @@ async def test_stale_cache_adopts_the_token_the_cli_already_refreshed(session, t
         kind="anthropic_oauth",
         source_path=path,
         access_token="stale-token",
-        expires_at=creds._now() - timedelta(minutes=1),
+        expires_at=datetime.now(timezone.utc) - timedelta(minutes=1),
     )
     session.add(cred)
     await session.commit()
@@ -193,7 +194,7 @@ async def test_expired_file_triggers_a_refresh_and_caches_the_result(
 
     async def fake_refresh(refresh_token: str):
         seen["refresh_token"] = refresh_token
-        return "refreshed-token", creds._now() + timedelta(hours=1)
+        return "refreshed-token", datetime.now(timezone.utc) + timedelta(hours=1)
 
     monkeypatch.setattr(creds, "refresh_anthropic_token", fake_refresh)
 
@@ -263,7 +264,7 @@ async def test_openai_oauth_refreshes_stale_token_and_writes_back(
 
     async def fake_refresh(refresh_token: str):
         assert refresh_token == "codex-refresh"
-        return fresh, "rotated-refresh", creds._now() + timedelta(days=3)
+        return fresh, "rotated-refresh", datetime.now(timezone.utc) + timedelta(days=3)
 
     monkeypatch.setattr(creds, "refresh_openai_token", fake_refresh)
 
@@ -281,7 +282,7 @@ async def test_openai_oauth_fresh_cache_skips_the_file(session, tmp_path):
         kind="openai_oauth",
         source_path=str(tmp_path / "auth.json"),
         access_token="cached-codex-token",
-        expires_at=creds._now() + timedelta(hours=2),
+        expires_at=datetime.now(timezone.utc) + timedelta(hours=2),
     )
     session.add(cred)
     await session.commit()

@@ -72,27 +72,81 @@ async def _insert(
 ) -> None:
     try:
         async with SessionLocal() as session:
-            session.add(
-                UsageLog(
-                    client_id=client_id,
-                    key_id=key_id,
-                    model_name=model_name,
-                    endpoint=endpoint,
-                    input_tokens=input_tokens,
-                    output_tokens=output_tokens,
-                    total_tokens=total_tokens,
-                    cache_creation_input_tokens=cache_creation_input_tokens,
-                    cache_read_input_tokens=cache_read_input_tokens,
-                    status_code=status_code,
-                    error_type=error_type,
-                    duration_ms=duration_ms,
-                    client_ip=client_ip_str,
-                )
+            await store_usage_row(
+                session,
+                client_id=client_id,
+                key_id=key_id,
+                model_name=model_name,
+                endpoint=endpoint,
+                status_code=status_code,
+                error_type=error_type,
+                duration_ms=duration_ms,
+                client_ip_str=client_ip_str,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                total_tokens=total_tokens,
+                cache_creation_input_tokens=cache_creation_input_tokens,
+                cache_read_input_tokens=cache_read_input_tokens,
             )
-            await session.commit()
     except Exception as e:
-        # Don't let logging errors take down request processing.
-        print(f"[usage] failed to insert usage_log row: {type(e).__name__}: {e}", flush=True)
+        # A request must not fail because its metering did. But the failure is
+        # counted and named loudly: a swallowed primary-key collision is how
+        # metering stops dead while every request keeps answering normally.
+        global _failures
+        _failures += 1
+        print(
+            f"[usage] METERING LOST: failed to insert usage_log row "
+            f"({_failures} since start): {type(e).__name__}: {e}",
+            flush=True,
+        )
+
+
+#: Rows this process failed to store. A swallowed failure that nothing counts
+#: is indistinguishable from no traffic.
+_failures = 0
+
+
+def metering_failures() -> int:
+    """How many usage rows this process has failed to store."""
+    return _failures
+
+
+async def store_usage_row(
+    session,
+    *,
+    client_id,
+    key_id,
+    model_name: str,
+    endpoint: str,
+    status_code: int,
+    error_type,
+    duration_ms,
+    client_ip_str,
+    input_tokens,
+    output_tokens,
+    total_tokens,
+    cache_creation_input_tokens,
+    cache_read_input_tokens,
+) -> None:
+    """Store one usage row, raising if it cannot be stored."""
+    session.add(
+        UsageLog(
+            client_id=client_id,
+            key_id=key_id,
+            model_name=model_name,
+            endpoint=endpoint,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            total_tokens=total_tokens,
+            cache_creation_input_tokens=cache_creation_input_tokens,
+            cache_read_input_tokens=cache_read_input_tokens,
+            status_code=status_code,
+            error_type=error_type,
+            duration_ms=duration_ms,
+            client_ip=client_ip_str,
+        )
+    )
+    await session.commit()
 
 
 def schedule(

@@ -15,11 +15,12 @@ config = context.config
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
-# Use the sync sqlite driver for migrations (Alembic doesn't need async).
+# Alembic is sync; the app is async. One setting fans out to both.
 # Double `%` so configparser doesn't treat it as interpolation. A caller that
 # already set a URL (the entrypoint, or a test pointing at a scratch file) wins.
 if not config.get_main_option("sqlalchemy.url", ""):
-    config.set_main_option("sqlalchemy.url", database_url(driver="").replace("%", "%%"))
+    config.set_main_option(
+        "sqlalchemy.url", database_url(driver="sync").replace("%", "%%"))
 
 target_metadata = Base.metadata
 
@@ -32,16 +33,21 @@ def run_migrations_offline() -> None:
         literal_binds=True,
         dialect_opts={"paramstyle": "named"},
         render_as_batch=True,
+        version_table_schema=config.attributes.get("search_path"),
     )
     with context.begin_transaction():
         context.run_migrations()
 
 
 def run_migrations_online() -> None:
+    search_path = config.attributes.get("search_path")
+    connect_args = (
+        {"options": f"-csearch_path={search_path}"} if search_path else {})
     connectable = engine_from_config(
         config.get_section(config.config_ini_section, {}),
         prefix="sqlalchemy.",
         poolclass=pool.NullPool,
+        connect_args=connect_args,
     )
     with connectable.connect() as connection:
         context.configure(
@@ -50,6 +56,11 @@ def run_migrations_online() -> None:
             # SQLite cannot ALTER most column properties; batch mode rebuilds
             # the table instead.
             render_as_batch=True,
+            # Where the bookkeeping row lives. The caller decides, because on
+            # Postgres the proxy's tables sit in a named schema and a version
+            # table that merely follows the search path lands in the shared
+            # one the day a DSN forgets it.
+            version_table_schema=config.attributes.get("search_path"),
         )
         with context.begin_transaction():
             context.run_migrations()

@@ -71,7 +71,10 @@ def _provider_name(host: str, taken: set[str]) -> str:
 def upgrade() -> None:
     op.create_table(
         "providers",
-        sa.Column("id", sa.Integer(), primary_key=True, autoincrement=True),
+        sa.Column(
+            "id", sa.BigInteger().with_variant(sa.Integer, "sqlite"), sa.Identity(),
+            primary_key=True, autoincrement=True,
+        ),
         sa.Column("name", sa.Unicode(64), nullable=False, unique=True),
         sa.Column("label", sa.Unicode(128), nullable=True),
         sa.Column("base_url", sa.Unicode(512), nullable=False),
@@ -80,7 +83,7 @@ def upgrade() -> None:
         sa.Column("chat_completions_path", sa.Unicode(256), nullable=True),
         sa.Column(
             "credential_id",
-            sa.Integer(),
+            sa.BigInteger().with_variant(sa.Integer, "sqlite"),
             sa.ForeignKey("credentials.id", ondelete="SET NULL"),
             nullable=True,
         ),
@@ -88,13 +91,13 @@ def upgrade() -> None:
         sa.Column("api_version", sa.Unicode(64), nullable=True),
         sa.Column("enabled", sa.Boolean(), nullable=False, server_default="1"),
         sa.Column(
-            "created_at", sa.DateTime(), nullable=False, server_default=sa.func.now()
+            "created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()
         ),
     )
     # Added without an inline foreign key: SQLite cannot attach one via ALTER,
     # and a batch rebuild trips over the unnamed constraints already on the
     # table. The relationship is declared in the ORM either way.
-    op.add_column("models", sa.Column("provider_id", sa.Integer(), nullable=True))
+    op.add_column("models", sa.Column("provider_id", sa.BigInteger().with_variant(sa.Integer, "sqlite"), nullable=True))
     op.add_column("models", sa.Column("harnesses", sa.Unicode(128), nullable=True))
 
     _backfill()
@@ -154,7 +157,8 @@ def _backfill() -> None:
                 "INSERT INTO providers (name, label, base_url, messages_path,"
                 " responses_path, chat_completions_path, credential_id, auth_scheme,"
                 " api_version, enabled) VALUES (:name, :label, :base_url, :messages,"
-                " :responses, :chat, :credential_id, :auth_scheme, :api_version, 1)"
+                " :responses, :chat, :credential_id, :auth_scheme, :api_version,"
+                " true) RETURNING id"
             ),
             {
                 "name": name,
@@ -168,7 +172,10 @@ def _backfill() -> None:
                 "api_version": group["api_version"],
             },
         )
-        provider_id = result.lastrowid
+        # RETURNING rather than `lastrowid`: psycopg has no such attribute at
+        # all, and psycopg2 answers with an OID, which would write garbage
+        # provider ids onto every model it touched.
+        provider_id = result.scalar_one()
         for model_id in group["models"]:
             bind.execute(
                 sa.text("UPDATE models SET provider_id = :pid WHERE id = :mid"),

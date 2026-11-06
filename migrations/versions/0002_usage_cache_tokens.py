@@ -23,11 +23,11 @@ depends_on = None
 def upgrade() -> None:
     op.add_column(
         "usage_log",
-        sa.Column("cache_creation_input_tokens", sa.Integer(), nullable=True),
+        sa.Column("cache_creation_input_tokens", sa.BigInteger().with_variant(sa.Integer, "sqlite"), nullable=True),
     )
     op.add_column(
         "usage_log",
-        sa.Column("cache_read_input_tokens", sa.Integer(), nullable=True),
+        sa.Column("cache_read_input_tokens", sa.BigInteger().with_variant(sa.Integer, "sqlite"), nullable=True),
     )
 
 

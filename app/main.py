@@ -90,7 +90,11 @@ def create_app() -> FastAPI:
     @app.on_event("shutdown")
     async def _shutdown():
         from app.azure import close_shared_client
+        from app.db import dispose_engine
         await close_shared_client()
+        # Drain the pool. On SQLite this was a file handle; on a server engine
+        # it is connections the server holds open until something closes them.
+        await dispose_engine()
 
     # ---- Public / health endpoints ------------------------------------------
     @app.get("/favicon.ico", include_in_schema=False)
@@ -105,9 +109,15 @@ def create_app() -> FastAPI:
 
     @app.get("/health")
     async def health():
+        from app.usage import metering_failures
+
+        # Metering that has stopped is the one failure a request cannot show:
+        # every answer is normal and the usage log simply stops growing. A
+        # count nothing reads is the same as no count at all.
         return {
             "status": "healthy",
             "streaming_enabled": config.enable_streaming,
+            "metering_failures": metering_failures(),
         }
 
     @app.get("/")
