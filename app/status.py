@@ -13,16 +13,18 @@ from __future__ import annotations
 
 import asyncio
 import time
+from datetime import timedelta
 from urllib.parse import urlsplit
 
 import httpx
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import HTMLResponse, JSONResponse
-from sqlalchemy import select, text
+from sqlalchemy import Float, case, func, literal_column, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import SessionLocal, get_session
-from app.orm import Model
+from app.orm import Model, UsageLog
+from app.timeutil import utcnow
 from app.templating import templates
 
 router = APIRouter()
@@ -150,16 +152,19 @@ async def connectivity_probe_loop() -> None:
 
 
 async def _summary(session: AsyncSession, hours: int = 24) -> dict:
+    """Request volume, error count and mean latency over the last `hours`."""
+    errored = case(
+        (UsageLog.error_type.isnot(None), 1),
+        (UsageLog.status_code >= 400, 1),
+        else_=0,
+    )
     row = (
         await session.execute(
-            text(
-                "SELECT COUNT(*) AS requests, "
-                "SUM(CASE WHEN error_type IS NOT NULL OR status_code >= 400 THEN 1 ELSE 0 END) AS errors, "
-                "AVG(CAST(duration_ms AS FLOAT)) AS avg_ms "
-                "FROM usage_log "
-                "WHERE created_at >= datetime('now', '-' || :hours || ' hours')"
-            ),
-            {"hours": hours},
+            select(
+                func.count().label("requests"),
+                func.coalesce(func.sum(errored), 0).label("errors"),
+                func.avg(func.cast(UsageLog.duration_ms, Float)).label("avg_ms"),
+            ).where(UsageLog.created_at >= _cutoff(hours))
         )
     ).one()
     requests = int(row.requests or 0)
@@ -174,20 +179,48 @@ async def _summary(session: AsyncSession, hours: int = 24) -> dict:
     }
 
 
+def _cutoff(hours: int):
+    """The lower bound of the window, as an instant.
+
+    Computed here rather than by the database. `datetime('now', ...)` is a
+    SQLite function that Postgres does not have, and an aware value is the
+    only shape both drivers agree on.
+    """
+    return utcnow() - timedelta(hours=hours)
+
+
+def _hour_bucket(session: AsyncSession):
+    """The created_at hour, as the engine this session is on can express it.
+
+    Postgres has `date_trunc`; SQLite has `strftime`. There is no portable
+    spelling, so this is the one place the dialect is named -- and it is read
+    off the connection rather than the process configuration, because the
+    session is what decides which database the query reaches.
+    """
+    if session.bind.dialect.name == "postgresql":
+        return func.date_trunc(literal_column("'hour'"), UsageLog.created_at)
+    return func.strftime("%Y-%m-%dT%H:00:00", UsageLog.created_at)
+
+
 async def _timeseries(session: AsyncSession, hours: int = 24) -> dict:
+    """The same counts as the summary, one row per hour."""
+    bucket = _hour_bucket(session).label("bucket")
+    errored = case(
+        (UsageLog.error_type.isnot(None), 1),
+        (UsageLog.status_code >= 400, 1),
+        else_=0,
+    )
     rows = (
         await session.execute(
-            text(
-                "SELECT strftime('%Y-%m-%dT%H:00:00', created_at) AS bucket, "
-                "COUNT(*) AS requests, "
-                "SUM(CASE WHEN error_type IS NOT NULL OR status_code >= 400 THEN 1 ELSE 0 END) AS errors, "
-                "AVG(CAST(duration_ms AS FLOAT)) AS avg_ms "
-                "FROM usage_log "
-                "WHERE created_at >= datetime('now', '-' || :hours || ' hours') "
-                "GROUP BY bucket "
-                "ORDER BY bucket"
-            ),
-            {"hours": hours},
+            select(
+                bucket,
+                func.count().label("requests"),
+                func.coalesce(func.sum(errored), 0).label("errors"),
+                func.avg(func.cast(UsageLog.duration_ms, Float)).label("avg_ms"),
+            )
+            .where(UsageLog.created_at >= _cutoff(hours))
+            .group_by(bucket)
+            .order_by(bucket)
         )
     ).all()
     buckets: list[str | None] = []
@@ -195,7 +228,11 @@ async def _timeseries(session: AsyncSession, hours: int = 24) -> dict:
     errors: list[int] = []
     avg_ms: list[float | None] = []
     for r in rows:
-        buckets.append(r.bucket)
+        value = r.bucket
+        buckets.append(
+            value.strftime("%Y-%m-%dT%H:00:00")
+            if hasattr(value, "strftime") else value
+        )
         requests.append(int(r.requests or 0))
         errors.append(int(r.errors or 0))
         avg_ms.append(round(float(r.avg_ms), 1) if r.avg_ms is not None else None)

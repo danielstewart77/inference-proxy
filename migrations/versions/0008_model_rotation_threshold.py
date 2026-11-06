@@ -25,7 +25,7 @@ def upgrade() -> None:
         batch.add_column(
             sa.Column(
                 "rotation_threshold_percent",
-                sa.Integer(),
+                sa.BigInteger().with_variant(sa.Integer, "sqlite"),
                 nullable=False,
                 server_default="30",
             )

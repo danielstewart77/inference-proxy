@@ -10,6 +10,7 @@ from sqlalchemy import BigInteger, case, cast, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth import require_html_admin
+from app.timeutil import utcnow
 from app.db import get_session
 from app.orm import Client, Model, UsageLog
 from app.templating import templates
@@ -18,7 +19,13 @@ router = APIRouter()
 
 
 def _since(days: int) -> datetime:
-    return (datetime.now(timezone.utc) - timedelta(days=days)).replace(tzinfo=None)
+    """The window's lower bound, aware UTC.
+
+    It used to strip the timezone, which asyncpg then re-read as this host's
+    local wall clock -- pushing the cutoff hours into the future and emptying
+    the report without any error at all.
+    """
+    return utcnow() - timedelta(days=days)
 
 
 def _sum_tokens(col):
@@ -50,13 +57,8 @@ def _cost_expr():
     )
 
 
-@router.get("/admin/usage", response_class=HTMLResponse)
-async def admin_usage(
-    request: Request,
-    days: int = Query(30, ge=1, le=365),
-    session: AsyncSession = Depends(get_session),
-):
-    await require_html_admin(request)
+async def _report(session: AsyncSession, days: int) -> dict:
+    """The usage report for the last `days` days, grouped three ways."""
     since = _since(days)
 
     by_model = (
@@ -108,13 +110,21 @@ async def admin_usage(
         )
     ).all()
 
+    return {
+        "by_model": by_model,
+        "by_endpoint": by_endpoint,
+        "by_client": by_client,
+    }
+
+
+@router.get("/admin/usage", response_class=HTMLResponse)
+async def admin_usage(
+    request: Request,
+    days: int = Query(30, ge=1, le=365),
+    session: AsyncSession = Depends(get_session),
+):
+    await require_html_admin(request)
+    report = await _report(session, days)
     return templates.TemplateResponse(
-        request,
-        "admin/usage.html",
-        {
-            "days": days,
-            "by_model": by_model,
-            "by_endpoint": by_endpoint,
-            "by_client": by_client,
-        },
+        request, "admin/usage.html", {"days": days, **report}
     )

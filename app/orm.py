@@ -17,6 +17,7 @@ from sqlalchemy import (
     Boolean,
     CheckConstraint,
     DateTime,
+    Identity,
     ForeignKey,
     Index,
     Integer,
@@ -42,17 +43,19 @@ class Client(Base):
 
     __tablename__ = "clients"
 
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    id: Mapped[int] = mapped_column(
+        BigInteger().with_variant(Integer, "sqlite"),
+        Identity(), primary_key=True, autoincrement=True
+    )
     name: Mapped[str] = mapped_column(Unicode(64), unique=True, nullable=False)
     kind: Mapped[str] = mapped_column(Unicode(20), nullable=False, server_default="app")
     description: Mapped[Optional[str]] = mapped_column(UnicodeText, nullable=True)
     disabled: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="0")
     # When true, this client may resolve admin-only models.
     privileged: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="0")
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime, nullable=False, server_default=func.now()
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now()
     )
-    last_seen_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    last_seen_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
 
     keys: Mapped[list["ApiKey"]] = relationship(
         "ApiKey", back_populates="client", cascade="all, delete-orphan"
@@ -73,14 +76,16 @@ class ApiKey(Base):
 
     __tablename__ = "keys"
 
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    id: Mapped[int] = mapped_column(
+        BigInteger().with_variant(Integer, "sqlite"),
+        Identity(), primary_key=True, autoincrement=True
+    )
     client_id: Mapped[int] = mapped_column(
-        Integer, ForeignKey("clients.id", ondelete="CASCADE"), nullable=False
+        BigInteger().with_variant(Integer, "sqlite"), ForeignKey("clients.id", ondelete="CASCADE"), nullable=False
     )
     label: Mapped[str] = mapped_column(Unicode(64), nullable=False, server_default="default")
     key_hash: Mapped[str] = mapped_column(Unicode(64), nullable=False, unique=True)
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime, nullable=False, server_default=func.now()
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now()
     )
     revoked: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="0")
 
@@ -108,17 +113,19 @@ class Credential(Base):
 
     __tablename__ = "credentials"
 
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    id: Mapped[int] = mapped_column(
+        BigInteger().with_variant(Integer, "sqlite"),
+        Identity(), primary_key=True, autoincrement=True
+    )
     name: Mapped[str] = mapped_column(Unicode(64), unique=True, nullable=False)
     kind: Mapped[str] = mapped_column(Unicode(32), nullable=False, server_default="static")
     secret: Mapped[Optional[str]] = mapped_column(Unicode(2048), nullable=True)
     source_path: Mapped[Optional[str]] = mapped_column(Unicode(512), nullable=True)
     # Cached access token + its expiry, for the OAuth kinds.
     access_token: Mapped[Optional[str]] = mapped_column(Unicode(2048), nullable=True)
-    expires_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
-    refreshed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime, nullable=False, server_default=func.now()
+    expires_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    refreshed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now()
     )
 
     __table_args__ = (
@@ -143,7 +150,10 @@ class Provider(Base):
 
     __tablename__ = "providers"
 
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    id: Mapped[int] = mapped_column(
+        BigInteger().with_variant(Integer, "sqlite"),
+        Identity(), primary_key=True, autoincrement=True
+    )
     name: Mapped[str] = mapped_column(Unicode(64), unique=True, nullable=False)
     label: Mapped[Optional[str]] = mapped_column(Unicode(128), nullable=True)
     # Scheme + host (+ any fixed prefix), without a trailing slash.
@@ -165,8 +175,7 @@ class Provider(Base):
     )
     api_version: Mapped[Optional[str]] = mapped_column(Unicode(64), nullable=True)
     enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="1")
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime, nullable=False, server_default=func.now()
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now()
     )
 
     credential: Mapped[Optional[Credential]] = relationship("Credential")
@@ -191,7 +200,10 @@ class Model(Base):
 
     __tablename__ = "models"
 
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    id: Mapped[int] = mapped_column(
+        BigInteger().with_variant(Integer, "sqlite"),
+        Identity(), primary_key=True, autoincrement=True
+    )
     deployment_name: Mapped[str] = mapped_column(Unicode(128), unique=True, nullable=False)
     label: Mapped[Optional[str]] = mapped_column(Unicode(128), nullable=True)
     description: Mapped[Optional[str]] = mapped_column(UnicodeText, nullable=True)
@@ -263,8 +275,7 @@ class Model(Base):
     # surface offering levels for it would hand the harness a flag the model
     # rejects.
     effort_levels: Mapped[Optional[str]] = mapped_column(Unicode(128), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime, nullable=False, server_default=func.now()
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now()
     )
 
     credential: Mapped[Optional[Credential]] = relationship("Credential")
@@ -290,10 +301,11 @@ class UsageLog(Base):
     # so BIGINT has to degrade to INTEGER there or inserts fail the NOT NULL
     # check on `id`.
     id: Mapped[int] = mapped_column(
-        BigInteger().with_variant(Integer, "sqlite"), primary_key=True, autoincrement=True
+        BigInteger().with_variant(Integer, "sqlite"),
+        Identity(), primary_key=True, autoincrement=True
     )
     client_id: Mapped[int] = mapped_column(
-        Integer, ForeignKey("clients.id"), nullable=False
+        BigInteger().with_variant(Integer, "sqlite"), ForeignKey("clients.id"), nullable=False
     )
     key_id: Mapped[Optional[int]] = mapped_column(
         Integer, ForeignKey("keys.id"), nullable=True
@@ -314,8 +326,7 @@ class UsageLog(Base):
     error_type: Mapped[Optional[str]] = mapped_column(Unicode(64), nullable=True)
     duration_ms: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     client_ip: Mapped[Optional[str]] = mapped_column(Unicode(45), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime, nullable=False, server_default=func.now()
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now()
     )
 
     client: Mapped[Client] = relationship("Client", back_populates="usage_logs")
