@@ -8,7 +8,7 @@ engine has, an identity column, a search path.
 
 from __future__ import annotations
 
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 
 import pytest
 from sqlalchemy import text
@@ -18,7 +18,6 @@ from app.config import config
 from app.orm import Client, UsageLog
 from app.retention import prune_once
 from app.status import _summary, _timeseries
-from app.timeutil import utcnow
 from tests.conftest import requires_postgres
 
 pytestmark = requires_postgres
@@ -39,7 +38,7 @@ def _row(client_id: int, *, age: timedelta, **over) -> UsageLog:
         output_tokens=1, total_tokens=2,
     )
     fields.update(over)
-    return UsageLog(created_at=utcnow() - age, **fields)
+    return UsageLog(created_at=datetime.now(timezone.utc) - age, **fields)
 
 
 @requires_postgres
@@ -61,21 +60,26 @@ async def test_the_window_includes_a_row_just_inside_it_and_excludes_one_just_ou
 
     assert [r.endpoint for r in report["by_endpoint"]] == ["/v1/messages"]
     assert report["by_endpoint"][0].requests == 1
+    assert [r.model_name for r in report["by_model"]] == ["m"]
+    assert report["by_model"][0].requests == 1
+    assert [r.client_name for r in report["by_client"]] == ["probe"]
+    assert report["by_client"][0].requests == 1
 
 
 @requires_postgres
 async def test_the_status_summary_counts_requests_and_errors(pg_session):
     client = await _client(pg_session)
     pg_session.add(_row(client.id, age=timedelta(minutes=5)))
-    pg_session.add(_row(client.id, age=timedelta(minutes=6), status_code=500,
+    pg_session.add(_row(client.id, age=timedelta(minutes=6), status_code=500))
+    pg_session.add(_row(client.id, age=timedelta(minutes=7),
                         error_type="upstream"))
     pg_session.add(_row(client.id, age=timedelta(days=5)))
     await pg_session.commit()
 
     summary = await _summary(pg_session, hours=24)
 
-    assert summary["requests"] == 2
-    assert summary["errors"] == 1
+    assert summary["requests"] == 3
+    assert summary["errors"] == 2
 
 
 @requires_postgres
@@ -89,6 +93,7 @@ async def test_the_status_timeseries_separates_two_hours(pg_session):
     pg_session.add(_row(client.id, age=timedelta(minutes=10)))
     pg_session.add(_row(client.id, age=timedelta(minutes=70)))
     pg_session.add(_row(client.id, age=timedelta(minutes=75)))
+    pg_session.add(_row(client.id, age=timedelta(days=5)))
     await pg_session.commit()
 
     series = await _timeseries(pg_session, hours=24)
@@ -100,16 +105,17 @@ async def test_the_status_timeseries_separates_two_hours(pg_session):
 @requires_postgres
 async def test_pruning_deletes_the_old_rows_and_keeps_the_rest(pg_session,
                                                                monkeypatch):
-    monkeypatch.setattr(config, "usage_prune_days", 90)
+    monkeypatch.setattr(config, "usage_prune_days", 7)
     client = await _client(pg_session)
-    pg_session.add(_row(client.id, age=timedelta(days=config.usage_prune_days + 1)))
-    pg_session.add(_row(client.id, age=timedelta(days=config.usage_prune_days + 2)))
-    pg_session.add(_row(client.id, age=timedelta(days=1)))
+    pg_session.add(_row(client.id, age=timedelta(days=8)))
+    pg_session.add(_row(client.id, age=timedelta(days=9)))
+    pg_session.add(_row(client.id, age=timedelta(days=6)))
+    pg_session.add(_row(client.id, age=timedelta(days=60)))
     await pg_session.commit()
 
     deleted = await prune_once(pg_session)
 
-    assert deleted == 2
+    assert deleted == 3
     remaining = (await pg_session.execute(
         text("SELECT count(*) FROM usage_log"))).scalar()
     assert remaining == 1
@@ -168,3 +174,54 @@ async def test_a_failed_usage_insert_is_reported_not_swallowed(pg_session):
             output_tokens=1, total_tokens=2,
             cache_creation_input_tokens=None, cache_read_input_tokens=None,
         )
+
+
+@requires_postgres
+async def test_a_stored_usage_row_reads_back_with_its_own_fields(pg_session):
+    """The row that can be stored is stored, with its values where they go.
+
+    Guarding only the failure direction leaves the whole mapping free: input
+    and output tokens could be swapped, or the caller's address dropped, and
+    nothing would say so.
+    """
+    from app.usage import store_usage_row
+
+    client = await _client(pg_session)
+    await store_usage_row(
+        pg_session, client_id=client.id, key_id=None, model_name="m",
+        endpoint="/v1/messages", status_code=200, error_type=None,
+        duration_ms=123, client_ip_str="10.1.2.3", input_tokens=11,
+        output_tokens=22, total_tokens=33,
+        cache_creation_input_tokens=44, cache_read_input_tokens=55,
+    )
+
+    row = (await pg_session.execute(text(
+        "SELECT input_tokens, output_tokens, total_tokens, duration_ms, "
+        "client_ip, cache_creation_input_tokens, cache_read_input_tokens "
+        "FROM usage_log"))).one()
+    assert row.input_tokens == 11
+    assert row.output_tokens == 22
+    assert row.total_tokens == 33
+    assert row.duration_ms == 123
+    assert row.client_ip == "10.1.2.3"
+    assert row.cache_creation_input_tokens == 44
+    assert row.cache_read_input_tokens == 55
+
+
+@requires_postgres
+async def test_the_orm_builds_identity_keys_on_postgres(pg_session):
+    """The fixture's schema comes from the ORM, not from Alembic.
+
+    Both have to produce the same shape, or a fresh install and the migrated
+    database diverge again -- so the ORM's own identity declaration is
+    checked where it is actually applied.
+    """
+    rows = (await pg_session.execute(text(
+        "SELECT table_name, is_identity, data_type FROM information_schema.columns "
+        "WHERE table_schema = current_schema() AND column_name = 'id' "
+        "ORDER BY table_name"))).all()
+
+    assert rows, "the fixture built no tables"
+    for row in rows:
+        assert row.is_identity == "YES", row.table_name
+        assert row.data_type == "bigint", row.table_name

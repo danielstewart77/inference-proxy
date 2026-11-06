@@ -66,10 +66,16 @@ def _build_engine() -> AsyncEngine:
                 "search_path": config.db_schema,
                 "statement_timeout": str(
                     config.statement_timeout_seconds * 1000),
-                "idle_in_transaction_session_timeout": "60000",
+                # Deliberately off. A streamed turn legitimately holds its
+                # session open for the whole stream, and an Opus turn runs
+                # well past a minute -- a timeout here terminates the backend
+                # mid-answer and the cause is sixty seconds in the past by
+                # the time anything notices. `statement_timeout` bounds the
+                # thing that can actually hang, which is one statement.
+                "idle_in_transaction_session_timeout": "0",
                 "application_name": "inference-proxy",
             },
-            "timeout": 10,
+            "timeout": config.connect_timeout_seconds,
         },
     )
 

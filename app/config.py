@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -32,6 +33,14 @@ class Config:
     # the old code ran `mkdir` on whatever it was handed.
     database_url_override: str = os.getenv("DATABASE_URL", "")
 
+    # Whether an empty target may be built from nothing. Off by default: the
+    # branch that creates tables in a schema holding none of them is the one
+    # that, pointed at the wrong schema, builds a complete empty copy beside
+    # the real data and then answers every request with a 401. A fresh
+    # install turns it on once; a cutover never does.
+    allow_schema_create: bool = os.getenv(
+        "PROXY_ALLOW_SCHEMA_CREATE", "false").lower() == "true"
+
     # The schema the proxy's tables live in, when the location is Postgres.
     # Load-bearing rather than cosmetic: `credentials` exists in three
     # schemas of the hive's one database meaning three different things, and
@@ -50,6 +59,7 @@ class Config:
     pool_timeout_seconds: int = int(os.getenv("DB_POOL_TIMEOUT_SECONDS", "10"))
     statement_timeout_seconds: int = int(
         os.getenv("DB_STATEMENT_TIMEOUT_SECONDS", "30"))
+    connect_timeout_seconds: int = int(os.getenv("DB_CONNECT_TIMEOUT_SECONDS", "10"))
 
     # Admin console. The admin is a single operator identity held in env, not
     # a row in the database — there is no user table any more, only clients.
@@ -114,11 +124,28 @@ def database_url(*, driver: str = "async") -> str:
     return f"{_DRIVERS[('sqlite', driver)]}:///{path}"
 
 
+#: Query parameters that carry a credential. A socket DSN has no `@`, so this
+#: is the only place a password can appear in one.
+_SECRET_PARAMS = ("password", "sslpassword")
+
+
 def redacted(url: str) -> str:
-    """`url` with any password replaced, for printing."""
-    if "@" not in url or "://" not in url:
+    """`url` with any password replaced, for printing.
+
+    The location used to be a file path. It carries a credential now, and the
+    startup banner goes to a world-readable log.
+    """
+    if "://" not in url:
+        return url
+    for param in _SECRET_PARAMS:
+        url = re.sub(rf"(?i)([?&]{param}=)[^&]*", r"\1***", url)
+    if "@" not in url:
         return url
     scheme, rest = url.split("://", 1)
     creds, host = rest.rsplit("@", 1)
+    if ":" not in creds:
+        # A DSN with a user and no password. Inventing one reads as a
+        # credential that is set when it is not.
+        return url
     user = creds.split(":", 1)[0]
     return f"{scheme}://{user}:***@{host}"

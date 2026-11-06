@@ -168,7 +168,8 @@ class Provider(Base):
     # that would answer it as chat.
     systemone_path: Mapped[Optional[str]] = mapped_column(Unicode(256), nullable=True)
     credential_id: Mapped[Optional[int]] = mapped_column(
-        Integer, ForeignKey("credentials.id", ondelete="SET NULL"), nullable=True
+        BigInteger().with_variant(Integer, "sqlite"),
+        ForeignKey("credentials.id", ondelete="SET NULL"), nullable=True
     )
     auth_scheme: Mapped[str] = mapped_column(
         Unicode(32), nullable=False, server_default="bearer"
@@ -211,12 +212,14 @@ class Model(Base):
     # `api_version` column is appended at request time when set.
     target_uri: Mapped[Optional[str]] = mapped_column(Unicode(512), nullable=True)
     credential_id: Mapped[Optional[int]] = mapped_column(
-        Integer, ForeignKey("credentials.id", ondelete="SET NULL"), nullable=True
+        BigInteger().with_variant(Integer, "sqlite"),
+        ForeignKey("credentials.id", ondelete="SET NULL"), nullable=True
     )
     # The upstream that hosts this model. When set it supplies the host, the
     # credential and the per-shape path, and `target_uri` is ignored.
     provider_id: Mapped[Optional[int]] = mapped_column(
-        Integer, ForeignKey("providers.id", ondelete="SET NULL"), nullable=True
+        BigInteger().with_variant(Integer, "sqlite"),
+        ForeignKey("providers.id", ondelete="SET NULL"), nullable=True
     )
     # Which harnesses may see and use this model, comma-separated ('claude',
     # 'codex'). Null — the default — means every harness the provider can
@@ -256,13 +259,14 @@ class Model(Base):
     # percentage of this number, and one on a model nobody measured has no
     # threshold to rotate at. Nullable in the schema only because rows
     # predate the column; the admin form will not save a model without one.
-    context_window: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    context_window: Mapped[Optional[int]] = mapped_column(
+        BigInteger().with_variant(Integer, "sqlite"), nullable=True)
     # The percentage of context_window at which a conversation on this model
     # rotates, 1..99. A property of the model rather than of any mind, so it
     # lives beside the window it is a fraction of. Rows that predate the
     # column were backfilled to 30; the admin form requires it on every save.
     rotation_threshold_percent: Mapped[int] = mapped_column(
-        Integer, nullable=False, default=30, server_default="30"
+        BigInteger().with_variant(Integer, "sqlite"), nullable=False, default=30, server_default="30"
     )
     # Whether the deployment reads image input: True, False, or None for
     # "nobody has said". Three states on purpose — a conversation holding
@@ -308,23 +312,29 @@ class UsageLog(Base):
         BigInteger().with_variant(Integer, "sqlite"), ForeignKey("clients.id"), nullable=False
     )
     key_id: Mapped[Optional[int]] = mapped_column(
-        Integer, ForeignKey("keys.id"), nullable=True
+        BigInteger().with_variant(Integer, "sqlite"), ForeignKey("keys.id"), nullable=True
     )
     model_name: Mapped[str] = mapped_column(Unicode(128), nullable=False)
     endpoint: Mapped[str] = mapped_column(Unicode(64), nullable=False)
-    input_tokens: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
-    output_tokens: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
-    total_tokens: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    input_tokens: Mapped[Optional[int]] = mapped_column(
+        BigInteger().with_variant(Integer, "sqlite"), nullable=True)
+    output_tokens: Mapped[Optional[int]] = mapped_column(
+        BigInteger().with_variant(Integer, "sqlite"), nullable=True)
+    total_tokens: Mapped[Optional[int]] = mapped_column(
+        BigInteger().with_variant(Integer, "sqlite"), nullable=True)
     # Cache token counts, stored exactly as the provider delivered them.
     # Semantics differ: Anthropic's input_tokens EXCLUDES cached tokens
     # (cache_creation + cache_read are billed separately, at 1.25x and 0.1x
     # base input respectively); OpenAI's prompt_tokens INCLUDES cached_tokens
     # (mapped into cache_read here; OpenAI has no cache-creation charge).
-    cache_creation_input_tokens: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
-    cache_read_input_tokens: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
-    status_code: Mapped[int] = mapped_column(Integer, nullable=False)
+    cache_creation_input_tokens: Mapped[Optional[int]] = mapped_column(
+        BigInteger().with_variant(Integer, "sqlite"), nullable=True)
+    cache_read_input_tokens: Mapped[Optional[int]] = mapped_column(
+        BigInteger().with_variant(Integer, "sqlite"), nullable=True)
+    status_code: Mapped[int] = mapped_column(BigInteger().with_variant(Integer, "sqlite"), nullable=False)
     error_type: Mapped[Optional[str]] = mapped_column(Unicode(64), nullable=True)
-    duration_ms: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    duration_ms: Mapped[Optional[int]] = mapped_column(
+        BigInteger().with_variant(Integer, "sqlite"), nullable=True)
     client_ip: Mapped[Optional[str]] = mapped_column(Unicode(45), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now()
     )

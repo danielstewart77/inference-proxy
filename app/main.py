@@ -109,9 +109,15 @@ def create_app() -> FastAPI:
 
     @app.get("/health")
     async def health():
+        from app.usage import metering_failures
+
+        # Metering that has stopped is the one failure a request cannot show:
+        # every answer is normal and the usage log simply stops growing. A
+        # count nothing reads is the same as no count at all.
         return {
             "status": "healthy",
             "streaming_enabled": config.enable_streaming,
+            "metering_failures": metering_failures(),
         }
 
     @app.get("/")

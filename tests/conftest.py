@@ -22,6 +22,13 @@ from app.orm import Base
 
 load_dotenv()
 
+# The suite's own engine is SQLite in memory, always. Once this host sets
+# DATABASE_URL -- which is the production configuration -- every test that
+# builds the app's real engine would otherwise run against the live `proxy`
+# schema and write into the hive's one database. The Postgres tests reach
+# Postgres through their own fixture, never through the app's configuration.
+os.environ["DATABASE_URL"] = ""
+
 #: A DSN with rights to create and drop a schema. No default: a default here
 #: would be a credential in a tracked file.
 PG_DSN = os.getenv("PROXY_TEST_DSN", "")
@@ -82,9 +89,23 @@ async def pg_session(pg_schema: str) -> AsyncSession:
     await engine.dispose()
 
 
+#: The driver prefixes a DSN may arrive carrying.
+_PREFIXES = ("postgresql+asyncpg://", "postgresql+psycopg://",
+             "postgresql://", "postgres://")
+
+
+def _with_driver(dsn: str, driver: str) -> str:
+    for prefix in _PREFIXES:
+        if dsn.startswith(prefix):
+            return f"{driver}://" + dsn[len(prefix):]
+    return dsn
+
+
 def _async_dsn(dsn: str) -> str:
     """The DSN with an asyncpg driver, whatever shape it arrived in."""
-    for prefix in ("postgresql+psycopg://", "postgresql://", "postgres://"):
-        if dsn.startswith(prefix):
-            return "postgresql+asyncpg://" + dsn[len(prefix):]
-    return dsn
+    return _with_driver(dsn, "postgresql+asyncpg")
+
+
+def sync_dsn(dsn: str) -> str:
+    """The DSN with a sync driver, for Alembic and the startup inspection."""
+    return _with_driver(dsn, "postgresql+psycopg")

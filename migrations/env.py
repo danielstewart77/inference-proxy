@@ -33,17 +33,21 @@ def run_migrations_offline() -> None:
         literal_binds=True,
         dialect_opts={"paramstyle": "named"},
         render_as_batch=True,
-        version_table_schema=config.attributes.get("version_table_schema"),
+        version_table_schema=config.attributes.get("search_path"),
     )
     with context.begin_transaction():
         context.run_migrations()
 
 
 def run_migrations_online() -> None:
+    search_path = config.attributes.get("search_path")
+    connect_args = (
+        {"options": f"-csearch_path={search_path}"} if search_path else {})
     connectable = engine_from_config(
         config.get_section(config.config_ini_section, {}),
         prefix="sqlalchemy.",
         poolclass=pool.NullPool,
+        connect_args=connect_args,
     )
     with connectable.connect() as connection:
         context.configure(
@@ -56,7 +60,7 @@ def run_migrations_online() -> None:
             # Postgres the proxy's tables sit in a named schema and a version
             # table that merely follows the search path lands in the shared
             # one the day a DSN forgets it.
-            version_table_schema=config.attributes.get("version_table_schema"),
+            version_table_schema=config.attributes.get("search_path"),
         )
         with context.begin_transaction():
             context.run_migrations()
