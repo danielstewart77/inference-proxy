@@ -36,11 +36,15 @@ plaintext is shown once at mint time and never again. A client marked
 | `anthropic_oauth` | a Claude CLI credential file, or a literal long-lived token in `secret` | file tokens are short-lived and refreshed automatically; a stored `secret` wins |
 | `openai_oauth` | a Codex CLI auth file | the subscription OAuth token (refreshed automatically, rotated tokens written back), or the file's plain `OPENAI_API_KEY` when present |
 
-**Models** are deployments. Each row carries its own target URI, the credential
-to authenticate with, and an `auth_scheme` (`bearer`, `x_api_key`, or
-`api_key_header`) saying how the secret is sent. The target URI's host and path
-decide the upstream protocol, so one proxy fronts Anthropic Messages, the
+**Providers** are upstreams. Each carries a base URL, one path per request
+shape it serves, the credential to authenticate with, and an `auth_scheme`
+(`bearer`, `x_api_key`, or `api_key_header`) saying how the secret is sent. The
+path decides the upstream protocol, so one proxy fronts Anthropic Messages, the
 OpenAI Responses API, and plain Chat Completions at the same time.
+
+**Models** are deployments, each hosted by one provider. A model has no
+credential or auth scheme of its own: change the provider's and every model
+under it follows. A model without an enabled provider is unavailable.
 
 ### Anthropic subscription OAuth
 

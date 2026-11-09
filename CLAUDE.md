@@ -41,6 +41,7 @@ builds the auth headers; it is the single place either concern is expressed.
 refresh. Route-specific header or body rewriting belongs in the route module
 under `app/proxy/`, not in either of those.
 
-Adding a provider usually means no code at all — a credential row and a model
-row. It means code only when the provider needs a wire format none of the
-existing routes speak.
+Adding a provider usually means no code at all — a credential row, a provider
+row and a model row. It means code only when the provider needs a wire format
+none of the existing routes speak. A model authenticates with its provider's
+credential and auth scheme, never with columns of its own.

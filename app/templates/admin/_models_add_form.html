@@ -11,31 +11,16 @@
       </div>
     </div>
     <label for="prov">Provider (the upstream hosting this model)</label>
-    <select id="prov" name="provider_id">
-      <option value="">— none: give a target URI below —</option>
+    <select id="prov" name="provider_id" required>
+      <option value="">— select a provider —</option>
       {% for p in providers %}
       <option value="{{ p.id }}">{{ p.label or p.name }}</option>
       {% endfor %}
     </select>
     <label for="harn">Restrict to harnesses (blank means every harness the provider serves)</label>
     <input type="text" id="harn" name="harnesses" placeholder="claude, codex, dsh">
-    <label for="uri">Target URI (only when no provider is chosen)</label>
-    <input type="text" id="uri" name="target_uri"
-           placeholder="https://...services.ai.azure.com/anthropic/v1/messages">
-    <label for="as">Auth scheme (how the secret is sent upstream)</label>
-    <select id="as" name="auth_scheme">
-      <option value="api_key_header">api-key header (Azure / Foundry)</option>
-      <option value="bearer" selected>Authorization: Bearer (OpenAI / Foundry Anthropic partner route)</option>
-      <option value="x_api_key">x-api-key header (real Anthropic)</option>
-    </select>
-    <label for="cred">Credential</label>
-    <select id="cred" name="credential_id">
-      <option value="">— none —</option>
-      {% for c in credentials %}
-      <option value="{{ c.id }}">{{ c.name }} ({{ c.kind }})</option>
-      {% endfor %}
-    </select>
-    <label for="av">API version (optional — leave blank if it's already in the URI)</label>
+    <p>The provider supplies the host, the path and the authentication.</p>
+    <label for="av">API version (optional)</label>
     <input type="text" id="av" name="api_version" placeholder="2025-04-01-preview">
     <label for="desc">Description (optional)</label>
     <textarea id="desc" name="description" rows="2"></textarea>

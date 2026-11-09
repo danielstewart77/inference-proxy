@@ -10,29 +10,15 @@
     <label>Label</label>
     <input type="text" name="label" value="{{ m.label or '' }}">
     <label>Provider (the upstream hosting this model)</label>
-    <select name="provider_id">
-      <option value="">— none: target URI below —</option>
+    <select name="provider_id" required>
+      <option value="">— select a provider —</option>
       {% for p in providers %}
       <option value="{{ p.id }}" {% if m.provider_id == p.id %}selected{% endif %}>{{ p.label or p.name }}</option>
       {% endfor %}
     </select>
     <label>Restrict to harnesses (blank means every harness the provider serves)</label>
     <input type="text" name="harnesses" value="{{ m.harnesses or '' }}" placeholder="claude, codex, dsh">
-    <label>Target URI (only when no provider is chosen)</label>
-    <input type="text" name="target_uri" value="{{ m.target_uri or '' }}">
-    <label>Auth scheme (how the secret is sent upstream)</label>
-    <select name="auth_scheme">
-      <option value="api_key_header" {% if m.auth_scheme == 'api_key_header' %}selected{% endif %}>api-key header (Azure / Foundry)</option>
-      <option value="bearer" {% if m.auth_scheme == 'bearer' %}selected{% endif %}>Authorization: Bearer (OpenAI / Foundry Anthropic partner route)</option>
-      <option value="x_api_key" {% if m.auth_scheme == 'x_api_key' %}selected{% endif %}>x-api-key header (real Anthropic)</option>
-    </select>
-    <label>Credential</label>
-    <select name="credential_id">
-      <option value="">— none —</option>
-      {% for c in credentials %}
-      <option value="{{ c.id }}" {% if m.credential_id == c.id %}selected{% endif %}>{{ c.name }} ({{ c.kind }})</option>
-      {% endfor %}
-    </select>
+    <p>The provider supplies the host, the path and the authentication.</p>
     <label>API version (optional)</label>
     <input type="text" name="api_version" value="{{ m.api_version or '' }}">
     <label>Description</label>

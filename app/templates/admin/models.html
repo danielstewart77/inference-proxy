@@ -6,9 +6,9 @@
    hosting it; the provider supplies the host, the credential and one path per
    request shape, so a model reachable in more than one shape is offered to
    every harness that speaks one. Restrict a model to particular harnesses only
-   to withhold it from one it would otherwise reach. A deployment with no
-   provider falls back to its own full target URI and serves the single shape
-   that path implies.</p>
+   to withhold it from one it would otherwise reach. Every deployment needs a
+   provider; changing a provider's credential or auth scheme changes it for
+   every model it hosts.</p>
 
 <div id="add-section">
   {% include "admin/_models_add_button.html" %}

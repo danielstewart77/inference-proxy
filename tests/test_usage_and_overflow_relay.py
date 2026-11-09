@@ -271,6 +271,7 @@ async def maker():
         anthropic = Provider(
             name="anthropic", base_url="https://api.anthropic.com",
             messages_path="/v1/messages", credential_id=credential.id,
+            auth_scheme="x_api_key",
         )
         openai = Provider(
             name="openai", base_url="https://chatgpt.test",
@@ -285,7 +286,7 @@ async def maker():
         setup.add_all(
             [
                 Model(deployment_name="claude-opus-5", provider_id=anthropic.id,
-                      auth_scheme="x_api_key", context_window=1_000_000),
+                      context_window=1_000_000),
                 Model(deployment_name="gpt-6-sol", provider_id=openai.id,
                       context_window=872_000),
                 Model(deployment_name="gpt-oss:120b-cloud", provider_id=ollama.id,
