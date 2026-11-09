@@ -29,7 +29,9 @@ removed. If you find a stale reference to any of that, delete it.
   A newly minted proxy key is the one exception, shown once at mint time.
 - **The key cache is authoritative on the hot path.** Any change to keys or to
   a client's `disabled` flag must call `refresh_key_cache(session)`, or the
-  change won't take effect until restart.
+  change won't take effect until restart. A change made by another process
+  (`python -m app.cli`) reaches the server through `key_cache_refresh_loop`
+  within `KEY_CACHE_REFRESH_SECONDS`.
 - **Fail closed.** `resolve_deployment` defaults `is_admin=False`, and an
   admin-only model hit by an unprivileged client returns 404, not 403, so
   restricted deployments aren't enumerable.
@@ -46,3 +48,8 @@ Adding a provider usually means no code at all — a credential row, a provider
 row and a model row. It means code only when the provider needs a wire format
 none of the existing routes speak. A model authenticates with its provider's
 credential and auth scheme, never with columns of its own.
+
+`app/cli.py` makes those rows and client keys from the command line. It calls
+the `insert_*` and `issue_key` functions the console's form routes call; a
+create path's validation lives in that function, never in the route or the
+CLI, so the two cannot drift.

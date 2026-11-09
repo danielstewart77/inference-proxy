@@ -261,6 +261,63 @@ async def edit_form_fragment(
     )
 
 
+async def insert_model(
+    session: AsyncSession,
+    *,
+    deployment_name: str,
+    provider_id: str,
+    context_window: str,
+    rotation_threshold_percent: str,
+    harnesses: str = "",
+    api_version: str = "",
+    label: str = "",
+    description: str = "",
+    cost_per_million_input: str = "",
+    cost_per_million_output: str = "",
+    cost_per_million_cache_write: str = "",
+    cost_per_million_cache_read: str = "",
+    effort_levels: str = "",
+    accepts_images: str = "",
+    enabled: bool = True,
+    admin_only: bool = False,
+) -> Model:
+    """Validate and store a new model; the console form and `app.cli` both
+    land here. Values arrive as the form submits them. A taken name is 409."""
+    name = _required_str(deployment_name, "deployment_name", max_len=128)
+    prov_id = _provider_required(await _resolve_provider_id(session, provider_id))
+    harness_list = _parse_harnesses(harnesses)
+
+    existing = (
+        await session.execute(
+            select(Model).where(Model.deployment_name == name)
+        )
+    ).scalar_one_or_none()
+    if existing is not None:
+        raise HTTPException(status_code=409, detail="Deployment already exists")
+
+    row = Model(
+        deployment_name=name,
+        label=_optional_str(label, max_len=128),
+        description=_optional_str(description, max_len=4000),
+        provider_id=prov_id,
+        harnesses=harness_list,
+        api_version=_optional_str(api_version, max_len=64),
+        enabled=enabled,
+        admin_only=admin_only,
+        cost_per_million_input=_parse_decimal(cost_per_million_input),
+        cost_per_million_output=_parse_decimal(cost_per_million_output),
+        cost_per_million_cache_write=_parse_decimal(cost_per_million_cache_write),
+        cost_per_million_cache_read=_parse_decimal(cost_per_million_cache_read),
+        context_window=_parse_context_window(context_window),
+        rotation_threshold_percent=_parse_rotation_threshold(rotation_threshold_percent),
+        effort_levels=_parse_effort_levels(effort_levels),
+        accepts_images=_parse_accepts_images(accepts_images),
+    )
+    session.add(row)
+    await session.commit()
+    return row
+
+
 @router.post("/admin/models")
 async def add_model(
     request: Request,
@@ -283,39 +340,25 @@ async def add_model(
     session: AsyncSession = Depends(get_session),
 ):
     await require_html_admin(request)
-    name = _required_str(deployment_name, "deployment_name", max_len=128)
-    prov_id = _provider_required(await _resolve_provider_id(session, provider_id))
-    harness_list = _parse_harnesses(harnesses)
-
-    existing = (
-        await session.execute(
-            select(Model).where(Model.deployment_name == name)
-        )
-    ).scalar_one_or_none()
-    if existing is not None:
-        raise HTTPException(status_code=409, detail="Deployment already exists")
-
-    session.add(
-        Model(
-            deployment_name=name,
-            label=_optional_str(label, max_len=128),
-            description=_optional_str(description, max_len=4000),
-            provider_id=prov_id,
-            harnesses=harness_list,
-            api_version=_optional_str(api_version, max_len=64),
-            enabled=(enabled == "on"),
-            admin_only=(admin_only == "on"),
-            cost_per_million_input=_parse_decimal(cost_per_million_input),
-            cost_per_million_output=_parse_decimal(cost_per_million_output),
-            cost_per_million_cache_write=_parse_decimal(cost_per_million_cache_write),
-            cost_per_million_cache_read=_parse_decimal(cost_per_million_cache_read),
-            context_window=_parse_context_window(context_window),
-            rotation_threshold_percent=_parse_rotation_threshold(rotation_threshold_percent),
-            effort_levels=_parse_effort_levels(effort_levels),
-            accepts_images=_parse_accepts_images(accepts_images),
-        )
+    await insert_model(
+        session,
+        deployment_name=deployment_name,
+        provider_id=provider_id,
+        harnesses=harnesses,
+        api_version=api_version,
+        label=label,
+        description=description,
+        cost_per_million_input=cost_per_million_input,
+        cost_per_million_output=cost_per_million_output,
+        cost_per_million_cache_write=cost_per_million_cache_write,
+        cost_per_million_cache_read=cost_per_million_cache_read,
+        context_window=context_window,
+        rotation_threshold_percent=rotation_threshold_percent,
+        effort_levels=effort_levels,
+        accepts_images=accepts_images,
+        enabled=(enabled == "on"),
+        admin_only=(admin_only == "on"),
     )
-    await session.commit()
     return RedirectResponse("/admin/models", status_code=303)
 
 

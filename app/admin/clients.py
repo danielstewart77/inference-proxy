@@ -93,6 +93,38 @@ async def list_clients(
     )
 
 
+async def insert_client(
+    session: AsyncSession,
+    *,
+    name: str,
+    kind: str = "app",
+    description: str = "",
+    privileged: bool = False,
+) -> Client:
+    """Validate and store a new client; the console form and `app.cli` both
+    land here. A taken name is 409."""
+    client_name = _required_str(name, "name", max_len=64)
+    client_kind = _validate_kind(kind)
+
+    existing = (
+        await session.execute(select(Client).where(Client.name == client_name))
+    ).scalar_one_or_none()
+    if existing is not None:
+        raise HTTPException(status_code=409, detail="Client name already exists")
+
+    row = Client(
+        name=client_name,
+        kind=client_kind,
+        description=_optional_str(description, max_len=4000),
+        disabled=False,
+        privileged=privileged,
+    )
+    session.add(row)
+    await session.commit()
+    # A new client holds no keys yet, so the cache is unchanged.
+    return row
+
+
 @router.post("/admin/clients")
 async def create_client(
     request: Request,
@@ -103,26 +135,13 @@ async def create_client(
     session: AsyncSession = Depends(get_session),
 ):
     await require_html_admin(request)
-    client_name = _required_str(name, "name", max_len=64)
-    client_kind = _validate_kind(kind)
-
-    existing = (
-        await session.execute(select(Client).where(Client.name == client_name))
-    ).scalar_one_or_none()
-    if existing is not None:
-        raise HTTPException(status_code=409, detail="Client name already exists")
-
-    session.add(
-        Client(
-            name=client_name,
-            kind=client_kind,
-            description=_optional_str(description, max_len=4000),
-            disabled=False,
-            privileged=(privileged == "on"),
-        )
+    await insert_client(
+        session,
+        name=name,
+        kind=kind,
+        description=description,
+        privileged=(privileged == "on"),
     )
-    await session.commit()
-    # A new client holds no keys yet, so the cache is unchanged.
     return RedirectResponse("/admin/clients", status_code=303)
 
 
@@ -208,6 +227,25 @@ async def delete_client(
     return RedirectResponse("/admin/clients", status_code=303)
 
 
+async def issue_key(session: AsyncSession, client: Client, label: str = "default") -> str:
+    """Mint a proxy key for `client` and return its plaintext, which exists
+    nowhere else: only the hash is stored. The console form and `app.cli`
+    both land here."""
+    raw_key = generate_proxy_key()
+    session.add(
+        ApiKey(
+            client_id=client.id,
+            label=_optional_str(label, max_len=64) or "default",
+            key_hash=_hash_key(raw_key),
+            revoked=False,
+        )
+    )
+    await session.commit()
+
+    await refresh_key_cache(session)
+    return raw_key
+
+
 @router.post("/admin/clients/{client_id}/keys")
 async def mint_key(
     client_id: int,
@@ -217,21 +255,8 @@ async def mint_key(
 ):
     await require_html_admin(request)
     target = await _get_client(session, client_id)
-
-    raw_key = generate_proxy_key()
-    session.add(
-        ApiKey(
-            client_id=target.id,
-            label=_optional_str(label, max_len=64) or "default",
-            key_hash=_hash_key(raw_key),
-            revoked=False,
-        )
-    )
-    await session.commit()
-
-    await refresh_key_cache(session)
-    # Plaintext is shown exactly once, on the redirect target — only the hash
-    # was stored.
+    raw_key = await issue_key(session, target, label)
+    # Plaintext is shown exactly once, on the redirect target.
     return RedirectResponse(
         f"/admin/clients?new_key={raw_key}&for_client={target.name}",
         status_code=303,

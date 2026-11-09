@@ -24,6 +24,7 @@ from app.admin import usage as admin_usage
 from app.auth import (
     is_admin_session,
     is_redirect_exception,
+    key_cache_refresh_loop,
     refresh_key_cache,
     resolve_requester_role,
     validate_api_key,
@@ -85,6 +86,7 @@ def create_app() -> FastAPI:
             print(f"[startup] proxy key cache loaded: {n} active key(s)", flush=True)
         # Background tasks
         asyncio.create_task(usage_prune_loop())
+        asyncio.create_task(key_cache_refresh_loop())
         asyncio.create_task(connectivity_probe_loop())
 
     @app.on_event("shutdown")

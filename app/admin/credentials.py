@@ -93,16 +93,16 @@ async def list_credentials(
     )
 
 
-@router.post("/admin/credentials")
-async def create_credential(
-    request: Request,
-    name: str = Form(...),
-    kind: str = Form("static"),
-    secret: str = Form(""),
-    source_path: str = Form(""),
-    session: AsyncSession = Depends(get_session),
-):
-    await require_html_admin(request)
+async def insert_credential(
+    session: AsyncSession,
+    *,
+    name: str,
+    kind: str = "static",
+    secret: str = "",
+    source_path: str = "",
+) -> Credential:
+    """Validate and store a new credential; the console form and `app.cli`
+    both land here. A taken name is 409."""
     cred_name = _required_str(name, "name", max_len=64)
     cred_kind = _validate_kind(kind)
 
@@ -129,15 +129,30 @@ async def create_credential(
         cred_secret = None
         cred_path = _required_str(source_path, "source_path", max_len=512)
 
-    session.add(
-        Credential(
-            name=cred_name,
-            kind=cred_kind,
-            secret=cred_secret,
-            source_path=cred_path,
-        )
+    row = Credential(
+        name=cred_name,
+        kind=cred_kind,
+        secret=cred_secret,
+        source_path=cred_path,
     )
+    session.add(row)
     await session.commit()
+    return row
+
+
+@router.post("/admin/credentials")
+async def create_credential(
+    request: Request,
+    name: str = Form(...),
+    kind: str = Form("static"),
+    secret: str = Form(""),
+    source_path: str = Form(""),
+    session: AsyncSession = Depends(get_session),
+):
+    await require_html_admin(request)
+    await insert_credential(
+        session, name=name, kind=kind, secret=secret, source_path=source_path
+    )
     return RedirectResponse("/admin/credentials", status_code=303)
 
 

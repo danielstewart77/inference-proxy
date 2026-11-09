@@ -10,6 +10,7 @@ Two entirely separate principals:
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import hmac
 import secrets
@@ -66,6 +67,24 @@ async def refresh_key_cache(session: AsyncSession) -> int:
     _DB_KEY_LOOKUP = new_lookup
     _DB_KEY_HASHES = frozenset(new_lookup.keys())
     return len(_DB_KEY_HASHES)
+
+
+async def key_cache_refresh_loop() -> None:
+    """Run forever: reload the key cache, sleep, repeat. Started at app startup.
+
+    A refresh after a console edit reaches only the process that made it. Keys
+    issued by `python -m app.cli`, which runs as a process of its own beside
+    the server, reach the server here, within one interval.
+    """
+    from app.db import SessionLocal
+
+    while True:
+        await asyncio.sleep(config.key_cache_refresh_seconds)
+        try:
+            async with SessionLocal() as session:
+                await refresh_key_cache(session)
+        except Exception as e:
+            print(f"[auth] key cache refresh failed: {type(e).__name__}: {e}", flush=True)
 
 
 def proxy_key_count() -> int:
