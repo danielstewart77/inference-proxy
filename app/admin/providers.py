@@ -124,6 +124,43 @@ async def list_providers(
     )
 
 
+async def insert_provider(
+    session: AsyncSession,
+    *,
+    name: str,
+    base_url: str,
+    label: str = "",
+    messages_path: str = "",
+    responses_path: str = "",
+    chat_completions_path: str = "",
+    credential_id: str = "",
+    auth_scheme: str = "bearer",
+    api_version: str = "",
+    enabled: bool = True,
+) -> Provider:
+    """Validate and store a new provider; the console form and `app.cli` both
+    land here. Values arrive as the form submits them. A taken name is 409."""
+    provider_name = _required(name, "name", max_len=64)
+    existing = (
+        await session.execute(select(Provider).where(Provider.name == provider_name))
+    ).scalar_one_or_none()
+    if existing is not None:
+        raise HTTPException(status_code=409, detail="Provider already exists")
+    row = Provider(
+        name=provider_name,
+        label=_optional(label, max_len=128),
+        base_url=_required(base_url, "base_url", max_len=512).rstrip("/"),
+        credential_id=await _resolve_credential_id(session, credential_id),
+        auth_scheme=_auth_scheme(auth_scheme),
+        api_version=_optional(api_version, max_len=64),
+        enabled=enabled,
+        **_paths(messages_path, responses_path, chat_completions_path),
+    )
+    session.add(row)
+    await session.commit()
+    return row
+
+
 @router.post("/admin/providers")
 async def add_provider(
     request: Request,
@@ -140,25 +177,19 @@ async def add_provider(
     session: AsyncSession = Depends(get_session),
 ):
     await require_html_admin(request)
-    provider_name = _required(name, "name", max_len=64)
-    existing = (
-        await session.execute(select(Provider).where(Provider.name == provider_name))
-    ).scalar_one_or_none()
-    if existing is not None:
-        raise HTTPException(status_code=409, detail="Provider already exists")
-    session.add(
-        Provider(
-            name=provider_name,
-            label=_optional(label, max_len=128),
-            base_url=_required(base_url, "base_url", max_len=512).rstrip("/"),
-            credential_id=await _resolve_credential_id(session, credential_id),
-            auth_scheme=_auth_scheme(auth_scheme),
-            api_version=_optional(api_version, max_len=64),
-            enabled=(enabled == "on"),
-            **_paths(messages_path, responses_path, chat_completions_path),
-        )
+    await insert_provider(
+        session,
+        name=name,
+        label=label,
+        base_url=base_url,
+        messages_path=messages_path,
+        responses_path=responses_path,
+        chat_completions_path=chat_completions_path,
+        credential_id=credential_id,
+        auth_scheme=auth_scheme,
+        api_version=api_version,
+        enabled=(enabled == "on"),
     )
-    await session.commit()
     return RedirectResponse("/admin/providers", status_code=303)
 
 

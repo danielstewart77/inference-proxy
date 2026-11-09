@@ -58,6 +58,12 @@ class Config:
     admin_username: str = os.getenv("ADMIN_USERNAME", "")
     admin_password: str = os.getenv("ADMIN_PASSWORD", "")
 
+    # How often a running proxy reloads its key cache from the database. A key
+    # minted or revoked by another process -- `python -m app.cli`, a second
+    # worker -- is otherwise invisible to this one until it restarts.
+    key_cache_refresh_seconds: float = float(
+        os.getenv("KEY_CACHE_REFRESH_SECONDS", "5"))
+
     # Usage log retention
     usage_prune_interval_seconds: int = int(os.getenv("USAGE_PRUNE_INTERVAL_SECONDS", "86400"))
     usage_prune_days: int = int(os.getenv("USAGE_PRUNE_DAYS", "90"))

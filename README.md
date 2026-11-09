@@ -81,6 +81,25 @@ every later start migrates it to head and refuses an empty one. Then sign into
 `/login` and, under `/admin`, add a credential, a provider that uses it, a
 model on that provider, a client, and mint that client a key.
 
+The same rows can be made without the console, which is how an installer
+does it. Each command prints JSON, goes through the same validation as the
+console form, and is safe to repeat: a name already taken is reused untouched
+and reported `"created": false`.
+
+```bash
+python -m app.cli add-provider --name anthropic --kind anthropic --api-key sk-ant-…
+python -m app.cli add-provider --name local --kind ollama --base-url http://ollama:11434
+python -m app.cli add-model --provider anthropic --model claude-sonnet-4-5 --context-window 200000
+python -m app.cli mint-key --client my-mind --kind mind    # prints the key once
+python -m app.cli list-models --harness dsh                # what GET /v1/models?harness=dsh answers
+```
+
+`--kind` is `anthropic`, `openai` or `ollama`; it sets the paths and auth
+scheme, and Anthropic and OpenAI default to their public APIs. `mint-key` on a
+client that already holds a live key mints nothing and says so. A running
+proxy picks up a key minted this way within `KEY_CACHE_REFRESH_SECONDS`
+(default 5). Inside the container: `docker compose exec inference-proxy python -m app.cli …`.
+
 Docker is supported too, with `docker compose up -d --build`. The default
 compose file is safe on a fresh clone: it does not require a `.env` file just
 to build, and does not mount any host credentials; the database is the
@@ -109,7 +128,7 @@ The service is then reachable inside that network as
 exist; the Hive stack creates and owns it.
 
 Pick one or the other, never both. The container and a host process share the
-same `data/` directory and the same published port, so a second deployment
+same database and the same published port, so a second deployment
 cannot bind the port, and a container built before the newest migration will
 crash-loop on `alembic upgrade head` against a database the host process has
 already stamped forward. If the container restarts on a loop with
@@ -195,6 +214,7 @@ app/
   orm.py           clients · keys · credentials · models · usage_log
   proxy/           anthropic · responses · chat_completions · compact · websocket
   admin/           the HTML console
+  cli.py           the console's create paths as commands, for installers
 migrations/        alembic, Postgres
 tests/             pytest
 ```
