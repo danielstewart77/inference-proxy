@@ -72,7 +72,7 @@ def upgrade() -> None:
     op.create_table(
         "providers",
         sa.Column(
-            "id", sa.BigInteger().with_variant(sa.Integer, "sqlite"), sa.Identity(),
+            "id", sa.BigInteger(), sa.Identity(),
             primary_key=True, autoincrement=True,
         ),
         sa.Column("name", sa.Unicode(64), nullable=False, unique=True),
@@ -83,7 +83,7 @@ def upgrade() -> None:
         sa.Column("chat_completions_path", sa.Unicode(256), nullable=True),
         sa.Column(
             "credential_id",
-            sa.BigInteger().with_variant(sa.Integer, "sqlite"),
+            sa.BigInteger(),
             sa.ForeignKey("credentials.id", ondelete="SET NULL"),
             nullable=True,
         ),
@@ -97,7 +97,7 @@ def upgrade() -> None:
     # Added without an inline foreign key: SQLite cannot attach one via ALTER,
     # and a batch rebuild trips over the unnamed constraints already on the
     # table. The relationship is declared in the ORM either way.
-    op.add_column("models", sa.Column("provider_id", sa.BigInteger().with_variant(sa.Integer, "sqlite"), nullable=True))
+    op.add_column("models", sa.Column("provider_id", sa.BigInteger(), nullable=True))
     op.add_column("models", sa.Column("harnesses", sa.Unicode(128), nullable=True))
 
     _backfill()

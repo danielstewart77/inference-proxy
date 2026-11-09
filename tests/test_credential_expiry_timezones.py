@@ -1,8 +1,8 @@
-"""Freshness is judged across both engines' idea of a timestamp.
+"""Freshness is judged whatever shape the timestamp arrives in.
 
-Postgres hands back an aware datetime for `timestamptz`; SQLite hands back a
-naive one. `_is_fresh` has to answer for both, and before this it raised a
-TypeError on the aware one — which is every read on Postgres.
+Postgres hands back an aware datetime for `timestamptz`; a row built in code
+can carry a naive one. `_is_fresh` has to answer for both, and before this it
+raised a TypeError on the aware one — which is every read on Postgres.
 """
 
 from __future__ import annotations
@@ -31,7 +31,7 @@ def test_aware_expiry_in_the_past_is_stale():
 
 
 def test_naive_expiry_in_the_future_is_fresh():
-    """SQLite stores naive UTC. It has to keep meaning UTC, not local time."""
+    """A naive value is UTC by convention. It has to keep meaning UTC, not local time."""
     future = (datetime.now(timezone.utc) + timedelta(hours=2)).replace(tzinfo=None)
     assert _is_fresh(_cred(future)) is True
 

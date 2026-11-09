@@ -18,10 +18,9 @@ from app.timeutil import utcnow
 async def prune_once(session) -> int:
     """Delete usage rows past the retention window; return how many went.
 
-    The cutoff is computed here rather than by the database.
-    `datetime('now', ...)` is a SQLite function, and against Postgres it
-    raised once a day into a log nobody reads while `usage_log` grew without
-    limit.
+    The cutoff is computed here rather than by the database. A database-side
+    expression written for the retired SQLite store raised once a day against
+    Postgres, into a log nobody reads, while `usage_log` grew without limit.
     """
     cutoff = utcnow() - timedelta(days=config.usage_prune_days)
     result = await session.execute(

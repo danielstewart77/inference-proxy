@@ -30,7 +30,7 @@ from alembic import command
 from alembic.config import Config as AlembicConfig
 from sqlalchemy import create_engine, inspect, text
 
-from app.config import config, database_url, is_postgres, redacted
+from app.config import config, database_url, redacted
 
 APP_TABLES = {"clients", "keys", "credentials", "models", "providers", "usage_log"}
 
@@ -140,7 +140,7 @@ def bootstrap_schema(dsn: Optional[str] = None,
     if dsn is None:
         dsn = database_url(driver="sync")
     if schema is None:
-        schema = config.db_schema if is_postgres() else None
+        schema = config.db_schema
 
     if schema and config.allow_schema_create:
         _create_schema(dsn, schema)
@@ -199,7 +199,7 @@ def main() -> int:
         f"  Streaming:       {'Enabled' if config.enable_streaming else 'Disabled'}\n"
         f"  Logging:         {'Enabled' if config.enable_logging else 'Disabled'}\n"
         f"  Database:        {redacted(database_url(driver='sync'))}\n"
-        f"  Schema:          {config.db_schema if is_postgres() else 'n/a (sqlite)'}\n"
+        f"  Schema:          {config.db_schema}\n"
         f"{'='*60}\n",
         flush=True,
     )

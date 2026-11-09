@@ -13,12 +13,11 @@ import pytest
 import pytest_asyncio
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.db import get_session
 from app.deployments import resolve_deployment
 from app.main import create_app
-from app.orm import Base, Credential, Model, Provider
+from app.orm import Credential, Model, Provider
 
 DECIDER = "pplx-decider:27b"
 ANSWER = {
@@ -94,14 +93,11 @@ async def test_a_provider_that_does_not_serve_the_wire_refuses_rather_than_using
 
 
 @pytest_asyncio.fixture
-async def client(monkeypatch):
+async def client(db_maker, monkeypatch):
     import app.main as main
     import app.proxy.systemone as route
 
-    engine = create_async_engine("sqlite+aiosqlite://", future=True)
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-    maker = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
+    maker = db_maker
     async with maker() as setup:
         await _store(setup)
 
@@ -117,7 +113,6 @@ async def client(monkeypatch):
     app.dependency_overrides[get_session] = _session
     with TestClient(app) as c:
         yield c
-    await engine.dispose()
 
 
 def _call(**overrides):

@@ -17,7 +17,8 @@ if config.config_file_name is not None:
 
 # Alembic is sync; the app is async. One setting fans out to both.
 # Double `%` so configparser doesn't treat it as interpolation. A caller that
-# already set a URL (the entrypoint, or a test pointing at a scratch file) wins.
+# already set a URL (the entrypoint, or a test pointing at a scratch database)
+# wins.
 if not config.get_main_option("sqlalchemy.url", ""):
     config.set_main_option(
         "sqlalchemy.url", database_url(driver="sync").replace("%", "%%"))
@@ -32,7 +33,6 @@ def run_migrations_offline() -> None:
         target_metadata=target_metadata,
         literal_binds=True,
         dialect_opts={"paramstyle": "named"},
-        render_as_batch=True,
         version_table_schema=config.attributes.get("search_path"),
     )
     with context.begin_transaction():
@@ -53,9 +53,6 @@ def run_migrations_online() -> None:
         context.configure(
             connection=connection,
             target_metadata=target_metadata,
-            # SQLite cannot ALTER most column properties; batch mode rebuilds
-            # the table instead.
-            render_as_batch=True,
             # Where the bookkeeping row lives. The caller decides, because on
             # Postgres the proxy's tables sit in a named schema and a version
             # table that merely follows the search path lands in the shared

@@ -14,12 +14,11 @@ from __future__ import annotations
 import pytest
 import pytest_asyncio
 from fastapi.testclient import TestClient
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app import provider_limits
 from app.db import get_session
 from app.main import create_app
-from app.orm import Base, Credential, Model, Provider
+from app.orm import Credential, Model, Provider
 
 
 ANTHROPIC_HEADERS = {
@@ -33,15 +32,12 @@ CODEX_HEADERS = {
 
 
 @pytest_asyncio.fixture
-async def client(monkeypatch):
-    """The app on a fresh in-memory db, with two providers and a valid key."""
+async def client(db_maker, monkeypatch):
+    """The app on a fresh scratch schema, with two providers and a valid key."""
     import app.main as main
 
     provider_limits.reset()
-    engine = create_async_engine("sqlite+aiosqlite://", future=True)
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-    maker = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
+    maker = db_maker
 
     async with maker() as setup:
         credential = Credential(name="c", kind="static", secret="s")
@@ -106,7 +102,6 @@ async def client(monkeypatch):
     monkeypatch.setattr("app.main.resolve_requester_role", lambda *a, **k: "admin")
     yield TestClient(app)
     provider_limits.reset()
-    await engine.dispose()
 
 
 def _by_name(payload: dict) -> dict:

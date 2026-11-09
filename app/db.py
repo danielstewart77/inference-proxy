@@ -1,21 +1,20 @@
-"""The engine and the session dependency, for whichever engine is configured.
+"""The engine and the session dependency.
 
 Built on first use rather than at import. Two reasons, both learned the hard
 way: an engine created at import time freezes the configuration before
-anything can point it somewhere, and on a server engine it means the process
-tries to reach the database while the module graph is still loading -- so a
-proxy that starts before Postgres is ready dies at import instead of at a
-place that can report why.
+anything can point it somewhere, and it means the process tries to reach the
+database while the module graph is still loading -- so a proxy that starts
+before Postgres is ready dies at import instead of at a place that can report
+why.
 """
 
 from __future__ import annotations
 
 from typing import AsyncIterator, Optional
 
-from sqlalchemy import event
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker, create_async_engine
 
-from app.config import config, database_url, is_postgres
+from app.config import config, database_url
 
 _engine: Optional[AsyncEngine] = None
 _maker: Optional[async_sessionmaker] = None
@@ -23,26 +22,6 @@ _maker: Optional[async_sessionmaker] = None
 
 def _build_engine() -> AsyncEngine:
     url = database_url(driver="async")
-
-    if not is_postgres():
-        engine = create_async_engine(url, pool_pre_ping=True, future=True)
-
-        @event.listens_for(engine.sync_engine, "connect")
-        def _sqlite_pragmas(dbapi_conn, _record):
-            """WAL for concurrent readers during streaming, and real FKs.
-
-            Only ever registered on a SQLite engine. Registered on a Postgres
-            one it fires inside pool checkout, so every connection -- and
-            every reconnection after a server restart -- fails on a word the
-            server does not know.
-            """
-            cur = dbapi_conn.cursor()
-            cur.execute("PRAGMA journal_mode=WAL")
-            cur.execute("PRAGMA foreign_keys=ON")
-            cur.execute("PRAGMA busy_timeout=5000")
-            cur.close()
-
-        return engine
 
     # The search path is the whole of the schema binding: the ORM declares no
     # schema on any table, and `credentials` exists three times in this

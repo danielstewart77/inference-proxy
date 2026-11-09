@@ -14,27 +14,23 @@ import pytest
 import pytest_asyncio
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.admin.models import _parse_harnesses
 from app.db import get_session
 from app.deployments import HARNESS_HEADER
 from app.main import create_app
-from app.orm import Base, Credential, Model, Provider
+from app.orm import Credential, Model, Provider
 
 
 @pytest_asyncio.fixture
-async def client(monkeypatch):
+async def client(db_maker, monkeypatch):
     """The app with a chat upstream and a Responses upstream, each serving a
     model granted to dsh."""
     import app.main as main
     import app.proxy.chat_completions as chat
     import app.proxy.responses as responses
 
-    engine = create_async_engine("sqlite+aiosqlite://", future=True)
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-    maker = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
+    maker = db_maker
 
     async with maker() as setup:
         credential = Credential(name="local", kind="static", secret="s")
@@ -98,7 +94,6 @@ async def client(monkeypatch):
     app.dependency_overrides[get_session] = _session
     with TestClient(app) as c:
         yield c
-    await engine.dispose()
 
 
 def _ask(client, **headers):

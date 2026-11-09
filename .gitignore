@@ -30,11 +30,10 @@ docker-compose.override.yml
 # Logs
 *.log
 
-# SQLite database
+# The retired SQLite files, kept on disk for recovery by hand
 data/
 .env.ulbackup
 
-# The cutover run: the scripts are the record of how it was done, the
-# reports and captured stdout are local and carry the DSN.
+# The cutover run's reports and captured stdout: local, and they carry the DSN.
 .cutover/*.txt
 .cutover/*.log

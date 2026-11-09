@@ -21,11 +21,10 @@ import httpx
 import pytest
 import pytest_asyncio
 from fastapi.testclient import TestClient
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.db import get_session
 from app.main import create_app
-from app.orm import Base, Credential, Model, Provider
+from app.orm import Credential, Model, Provider
 from app.proxy.chat_completions import (
     stream_responses_to_completions,
     transform_response_to_completions,
@@ -258,11 +257,8 @@ async def test_a_claude_turn_that_runs_into_its_window_is_an_overflow_not_a_leng
 
 
 @pytest_asyncio.fixture
-async def maker():
-    engine = create_async_engine("sqlite+aiosqlite://", future=True)
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-    made = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
+async def maker(db_maker):
+    made = db_maker
 
     async with made() as setup:
         credential = Credential(name="c", kind="static", secret="s")
@@ -295,7 +291,6 @@ async def maker():
         )
         await setup.commit()
     yield made
-    await engine.dispose()
 
 
 @pytest.fixture

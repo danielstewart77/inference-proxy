@@ -92,8 +92,8 @@ def create_app() -> FastAPI:
         from app.azure import close_shared_client
         from app.db import dispose_engine
         await close_shared_client()
-        # Drain the pool. On SQLite this was a file handle; on a server engine
-        # it is connections the server holds open until something closes them.
+        # Drain the pool: connections the server holds open until something
+        # closes them.
         await dispose_engine()
 
     # ---- Public / health endpoints ------------------------------------------

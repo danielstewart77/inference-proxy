@@ -1,15 +1,15 @@
-"""Where the proxy's data lives is one setting, and it resolves two ways.
+"""Where the proxy's data lives is one setting: a Postgres DSN.
 
-`DATABASE_URL` wins and is handed through with the driver the caller asked
-for. With it unset the proxy is on its own SQLite file, which is what makes
-the revert one setting and a restart.
+`DATABASE_URL` is handed through with the driver the caller asked for. There
+is no other engine, so an unset or foreign setting is refused rather than
+resolved to somewhere else.
 """
 
 from __future__ import annotations
 
 import pytest
 
-from app.config import REPO_ROOT, database_url, is_postgres, redacted
+from app.config import database_url, redacted
 
 
 def test_postgres_url_gets_the_async_driver(monkeypatch):
@@ -32,20 +32,10 @@ def test_postgres_url_gets_the_sync_driver_for_migrations(monkeypatch):
     )
 
 
-def test_an_unset_override_resolves_to_the_sqlite_file(monkeypatch):
+def test_an_unset_database_url_is_refused_rather_than_falling_back_to_a_file(monkeypatch):
     monkeypatch.setattr("app.config.config.database_url_override", "")
-    monkeypatch.setattr("app.config.config.db_path", "data/proxy.db")
-    assert database_url(driver="async") == (
-        f"sqlite+aiosqlite:///{REPO_ROOT / 'data' / 'proxy.db'}"
-    )
-
-
-def test_the_sqlite_file_gets_a_sync_driver_for_migrations(monkeypatch):
-    monkeypatch.setattr("app.config.config.database_url_override", "")
-    monkeypatch.setattr("app.config.config.db_path", "data/proxy.db")
-    assert database_url(driver="sync") == (
-        f"sqlite:///{REPO_ROOT / 'data' / 'proxy.db'}"
-    )
+    with pytest.raises(ValueError, match="DATABASE_URL is unset"):
+        database_url(driver="async")
 
 
 def test_an_engine_this_proxy_does_not_speak_is_refused(monkeypatch):
@@ -68,14 +58,6 @@ def test_a_password_is_never_rendered_back(monkeypatch):
 
 
 def test_a_location_with_no_credential_is_left_alone(monkeypatch):
-    path = "sqlite:////home/daniel/Storage/Dev/inference-proxy/data/proxy.db"
-    assert redacted(path) == path
+    dsn = "postgresql+asyncpg://hive@127.0.0.1:5433/hive"
+    assert redacted(dsn) == dsn
 
-
-def test_is_postgres_follows_the_override(monkeypatch):
-    monkeypatch.setattr("app.config.config.database_url_override", "")
-    assert is_postgres() is False
-    monkeypatch.setattr(
-        "app.config.config.database_url_override", "postgresql://u:p@h/d"
-    )
-    assert is_postgres() is True

@@ -13,7 +13,7 @@ from fastapi.testclient import TestClient
 from app.main import create_app
 
 
-def test_the_retired_anthropic_listing_path_is_refused_not_answered():
+def test_the_retired_anthropic_listing_path_is_refused_not_answered(db_maker):
     with TestClient(create_app()) as client:
         response = client.get("/v1/anthropic/models")
 

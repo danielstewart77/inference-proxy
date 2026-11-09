@@ -19,7 +19,7 @@ depends_on = None
 def upgrade() -> None:
     op.create_table(
         "clients",
-        sa.Column("id", sa.BigInteger().with_variant(sa.Integer, "sqlite"), sa.Identity(),
+        sa.Column("id", sa.BigInteger(), sa.Identity(),
                   autoincrement=True, nullable=False),
         sa.Column("name", sa.Unicode(64), nullable=False),
         sa.Column("kind", sa.Unicode(20), nullable=False, server_default="app"),
@@ -35,9 +35,9 @@ def upgrade() -> None:
 
     op.create_table(
         "keys",
-        sa.Column("id", sa.BigInteger().with_variant(sa.Integer, "sqlite"), sa.Identity(),
+        sa.Column("id", sa.BigInteger(), sa.Identity(),
                   autoincrement=True, nullable=False),
-        sa.Column("client_id", sa.BigInteger().with_variant(sa.Integer, "sqlite"), nullable=False),
+        sa.Column("client_id", sa.BigInteger(), nullable=False),
         sa.Column("label", sa.Unicode(64), nullable=False, server_default="default"),
         sa.Column("key_hash", sa.Unicode(64), nullable=False),
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()),
@@ -50,7 +50,7 @@ def upgrade() -> None:
 
     op.create_table(
         "credentials",
-        sa.Column("id", sa.BigInteger().with_variant(sa.Integer, "sqlite"), sa.Identity(),
+        sa.Column("id", sa.BigInteger(), sa.Identity(),
                   autoincrement=True, nullable=False),
         sa.Column("name", sa.Unicode(64), nullable=False),
         sa.Column("kind", sa.Unicode(32), nullable=False, server_default="static"),
@@ -69,13 +69,13 @@ def upgrade() -> None:
 
     op.create_table(
         "models",
-        sa.Column("id", sa.BigInteger().with_variant(sa.Integer, "sqlite"), sa.Identity(),
+        sa.Column("id", sa.BigInteger(), sa.Identity(),
                   autoincrement=True, nullable=False),
         sa.Column("deployment_name", sa.Unicode(128), nullable=False),
         sa.Column("label", sa.Unicode(128), nullable=True),
         sa.Column("description", sa.UnicodeText(), nullable=True),
         sa.Column("target_uri", sa.Unicode(512), nullable=True),
-        sa.Column("credential_id", sa.BigInteger().with_variant(sa.Integer, "sqlite"), nullable=True),
+        sa.Column("credential_id", sa.BigInteger(), nullable=True),
         sa.Column("api_version", sa.Unicode(64), nullable=True),
         sa.Column("auth_scheme", sa.Unicode(32), nullable=False, server_default="bearer"),
         sa.Column("enabled", sa.Boolean(), nullable=False, server_default="1"),
@@ -90,22 +90,21 @@ def upgrade() -> None:
 
     op.create_table(
         "usage_log",
-        # BigInteger degrades to Integer on SQLite; see the note in app/orm.py.
         sa.Column(
             "id",
-            sa.BigInteger().with_variant(sa.Integer, "sqlite"), sa.Identity(),
+            sa.BigInteger(), sa.Identity(),
             autoincrement=True, nullable=False,
         ),
-        sa.Column("client_id", sa.BigInteger().with_variant(sa.Integer, "sqlite"), nullable=False),
-        sa.Column("key_id", sa.BigInteger().with_variant(sa.Integer, "sqlite"), nullable=True),
+        sa.Column("client_id", sa.BigInteger(), nullable=False),
+        sa.Column("key_id", sa.BigInteger(), nullable=True),
         sa.Column("model_name", sa.Unicode(128), nullable=False),
         sa.Column("endpoint", sa.Unicode(64), nullable=False),
-        sa.Column("input_tokens", sa.BigInteger().with_variant(sa.Integer, "sqlite"), nullable=True),
-        sa.Column("output_tokens", sa.BigInteger().with_variant(sa.Integer, "sqlite"), nullable=True),
-        sa.Column("total_tokens", sa.BigInteger().with_variant(sa.Integer, "sqlite"), nullable=True),
-        sa.Column("status_code", sa.BigInteger().with_variant(sa.Integer, "sqlite"), nullable=False),
+        sa.Column("input_tokens", sa.BigInteger(), nullable=True),
+        sa.Column("output_tokens", sa.BigInteger(), nullable=True),
+        sa.Column("total_tokens", sa.BigInteger(), nullable=True),
+        sa.Column("status_code", sa.BigInteger(), nullable=False),
         sa.Column("error_type", sa.Unicode(64), nullable=True),
-        sa.Column("duration_ms", sa.BigInteger().with_variant(sa.Integer, "sqlite"), nullable=True),
+        sa.Column("duration_ms", sa.BigInteger(), nullable=True),
         sa.Column("client_ip", sa.Unicode(45), nullable=True),
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()),
         sa.PrimaryKeyConstraint("id"),

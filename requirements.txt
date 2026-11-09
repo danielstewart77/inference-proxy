@@ -4,9 +4,8 @@ httpx==0.26.0
 python-dotenv==1.0.0
 cryptography==42.0.0
 sqlalchemy[asyncio]==2.0.30
-aiosqlite==0.20.0
-# Postgres, when DATABASE_URL points at one. asyncpg for the app,
-# psycopg for Alembic and the startup inspection, which are sync.
+# Postgres, the only engine. asyncpg for the app, psycopg for Alembic and the
+# startup inspection, which are sync.
 asyncpg==0.30.0
 psycopg[binary]==3.2.3
 alembic==1.13.1

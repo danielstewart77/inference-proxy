@@ -231,9 +231,9 @@ async def refresh_anthropic_token(refresh_token: str) -> tuple[str, datetime]:
 def _is_fresh(cred: Credential) -> bool:
     """Whether `cred`'s cached access token is still worth sending.
 
-    `expires_at` arrives aware from Postgres and naive from SQLite, so it is
-    coerced before being compared. Comparing the two shapes directly raises,
-    which on Postgres was every read.
+    `expires_at` is coerced to aware UTC before being compared: comparing an
+    aware value with a naive one raises, and a row built in code rather than
+    read back can carry either.
     """
     if not cred.access_token or cred.expires_at is None:
         return False
