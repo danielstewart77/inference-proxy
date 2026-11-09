@@ -198,14 +198,10 @@ def _parse_effort_levels(raw: Optional[str]) -> Optional[str]:
 
 
 def _upstream_required(target_uri: Optional[str], provider_id: Optional[int]) -> str:
-    """A model needs somewhere to go: a provider, or its own full URI."""
-    uri = (target_uri or "").strip()
-    if not uri and provider_id is None:
-        raise HTTPException(
-            status_code=400,
-            detail="Choose a provider, or give this model its own target URI",
-        )
-    return uri
+    """Every model must use a provider for routing and authentication."""
+    if provider_id is None:
+        raise HTTPException(status_code=400, detail="Choose a provider")
+    return (target_uri or "").strip()
 
 
 def _parse_context_window(raw: Optional[str]) -> int:
@@ -380,8 +376,8 @@ async def add_model(
     if len(raw_uri) > 512:
         raise HTTPException(status_code=400, detail="target_uri must be 512 characters or fewer")
     harness_list = _parse_harnesses(harnesses)
-    cred_id = await _resolve_credential_id(session, credential_id)
-    scheme = _validate_auth_scheme(auth_scheme)
+    cred_id = None
+    scheme = "bearer"
     cleaned_uri, final_api_version = _reconcile_api_version(
         raw_uri, _optional_str(api_version, max_len=64)
     )
@@ -465,9 +461,8 @@ async def update_model(
     target.target_uri = cleaned_uri or None
     target.provider_id = prov_id
     target.harnesses = _parse_harnesses(harnesses)
-    target.credential_id = await _resolve_credential_id(session, credential_id)
+    target.credential_id = None
     target.api_version = final_api_version
-    target.auth_scheme = _validate_auth_scheme(auth_scheme)
     target.label = _optional_str(label, max_len=128)
     target.description = _optional_str(description, max_len=4000)
     target.enabled = (enabled == "on")

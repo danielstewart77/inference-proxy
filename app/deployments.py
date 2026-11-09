@@ -297,9 +297,8 @@ def resolve_target_uri(row: Model, wire: Optional[str]) -> Optional[str]:
     A model attached to a provider has no path of its own: the provider holds
     the host and one path per shape it serves, and the shape is whichever
     endpoint the request came in on. That is what lets one locally-hosted model
-    answer a Claude harness and a Codex harness both. A model with no provider
-    falls back to its own stored URI, which is the pre-provider arrangement and
-    serves exactly one shape.
+    answer a Claude harness and a Codex harness both. A model without a
+    provider is unavailable.
 
     Disabling a provider takes its models with it. Falling back to the URI a
     migrated row still carries would send traffic to the upstream that was
@@ -309,7 +308,7 @@ def resolve_target_uri(row: Model, wire: Optional[str]) -> Optional[str]:
     """
     provider = row.provider
     if provider is None:
-        return row.target_uri
+        return None
     if not provider.enabled:
         return None
 
@@ -389,11 +388,7 @@ async def resolve_deployment(
     if not target_uri:
         _raise(error_kind, 503, f"Model {name!r} has no upstream URI configured")
     provider = row.provider if row.provider is not None and row.provider.enabled else None
-    credential = (
-        row.credential
-        if row.credential is not None or provider is None
-        else provider.credential
-    )
+    credential = provider.credential
     try:
         secret = await resolve_secret(session, credential)
     except CredentialError as exc:
@@ -403,7 +398,7 @@ async def resolve_deployment(
         target_uri=target_uri,
         api_key=secret,
         api_version=row.api_version or (provider.api_version if provider else None),
-        auth_scheme=row.auth_scheme,
+        auth_scheme=provider.auth_scheme,
         credential_kind=credential.kind if credential else "static",
     )
 
