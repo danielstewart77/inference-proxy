@@ -260,35 +260,9 @@ def wires_for(row: Model) -> list[str]:
     """
     served = []
     for wire in ALL_WIRES:
-        uri = resolve_target_uri(row, wire)
-        if not uri:
-            continue
-        if row.provider is None and not uri_serves(uri, wire):
-            continue
-        served.append(wire)
+        if resolve_target_uri(row, wire):
+            served.append(wire)
     return served
-
-
-def uri_serves(target_uri: Optional[str], wire: str) -> bool:
-    """Whether a stored URI answers requests of shape `wire`.
-
-    Only needed for a model registered before providers existed, whose single
-    baked-in path is the only shape it can serve.
-    """
-    if not target_uri:
-        return False
-    probe = DeploymentTarget(name="", target_uri=target_uri, api_key="", api_version=None)
-    if wire == "anthropic_messages":
-        return probe.is_anthropic_messages
-    if wire == "openai_responses":
-        return probe.is_openai_responses
-    if wire == "chat_completions":
-        return (
-            probe.is_openai_responses
-            or probe.is_native_chat_completions
-            or probe.is_anthropic_messages
-        )
-    return False
 
 
 def resolve_target_uri(row: Model, wire: Optional[str]) -> Optional[str]:
@@ -363,10 +337,7 @@ async def resolve_deployment(
     row = (
         await session.execute(
             select(Model)
-            .options(
-                selectinload(Model.credential),
-                selectinload(Model.provider).selectinload(Provider.credential),
-            )
+            .options(selectinload(Model.provider).selectinload(Provider.credential))
             .where(
                 Model.deployment_name == name,
                 Model.enabled.is_(True),
@@ -387,7 +358,11 @@ async def resolve_deployment(
     target_uri = resolve_target_uri(row, wire)
     if not target_uri:
         _raise(error_kind, 503, f"Model {name!r} has no upstream URI configured")
-    provider = row.provider if row.provider is not None and row.provider.enabled else None
+    # A resolved URI means an enabled provider: `resolve_target_uri` refuses a
+    # model without one. The provider alone authenticates the model — a
+    # credential or scheme still stored on the model row is never read, so
+    # changing the provider's moves every model under it.
+    provider = row.provider
     credential = provider.credential
     try:
         secret = await resolve_secret(session, credential)
@@ -397,7 +372,7 @@ async def resolve_deployment(
         name=row.deployment_name,
         target_uri=target_uri,
         api_key=secret,
-        api_version=row.api_version or (provider.api_version if provider else None),
+        api_version=row.api_version or provider.api_version,
         auth_scheme=provider.auth_scheme,
         credential_kind=credential.kind if credential else "static",
     )

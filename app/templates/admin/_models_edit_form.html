@@ -10,7 +10,7 @@
     <label>Label</label>
     <input type="text" name="label" value="{{ m.label or '' }}">
     <label>Provider (the upstream hosting this model)</label>
-    <select name="provider_id">
+    <select name="provider_id" required>
       <option value="">— select a provider —</option>
       {% for p in providers %}
       <option value="{{ p.id }}" {% if m.provider_id == p.id %}selected{% endif %}>{{ p.label or p.name }}</option>
@@ -18,9 +18,7 @@
     </select>
     <label>Restrict to harnesses (blank means every harness the provider serves)</label>
     <input type="text" name="harnesses" value="{{ m.harnesses or '' }}" placeholder="claude, codex, dsh">
-    <label>Target URI (only when no provider is chosen)</label>
-    <input type="text" name="target_uri" value="{{ m.target_uri or '' }}">
-    <p>Authentication is configured on the provider.</p>
+    <p>The provider supplies the host, the path and the authentication.</p>
     <label>API version (optional)</label>
     <input type="text" name="api_version" value="{{ m.api_version or '' }}">
     <label>Description</label>

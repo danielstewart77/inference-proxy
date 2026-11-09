@@ -14,7 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth import require_html_admin
 from app.db import get_session
-from app.orm import Credential, Model
+from app.orm import Credential, Model, Provider
 from app.templating import templates
 
 router = APIRouter()
@@ -74,10 +74,12 @@ async def list_credentials(
     rows = (
         await session.execute(select(Credential).order_by(Credential.name))
     ).scalars().all()
+    # A model is authenticated by its provider's credential, never its own.
     usage_rows = (
         await session.execute(
-            select(Model.credential_id, Model.deployment_name)
-            .where(Model.credential_id.is_not(None))
+            select(Provider.credential_id, Model.deployment_name)
+            .join(Model, Model.provider_id == Provider.id)
+            .where(Provider.credential_id.is_not(None))
             .order_by(Model.deployment_name)
         )
     ).all()

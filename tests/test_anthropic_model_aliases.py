@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 from fastapi import HTTPException
 
-from app.orm import Credential, Model
+from app.orm import Credential, Model, Provider
 from app.proxy.anthropic import (
     _base_model_from_bracket_variant,
     _resolve_anthropic_deployment,
@@ -16,12 +16,20 @@ async def _add_model(session, name: str, *, admin_only: bool = False) -> None:
     cred = Credential(name=f"cred-{name}", kind="static", secret="s")
     session.add(cred)
     await session.flush()
+    provider = Provider(
+        name=f"anthropic-{name}",
+        base_url="https://api.anthropic.com",
+        messages_path="/v1/messages",
+        credential_id=cred.id,
+        auth_scheme="bearer",
+        enabled=True,
+    )
+    session.add(provider)
+    await session.flush()
     session.add(
         Model(
             deployment_name=name,
-            target_uri="https://api.anthropic.com/v1/messages",
-            credential_id=cred.id,
-            auth_scheme="bearer",
+            provider_id=provider.id,
             enabled=True,
             admin_only=admin_only,
         )

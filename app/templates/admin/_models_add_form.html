@@ -11,7 +11,7 @@
       </div>
     </div>
     <label for="prov">Provider (the upstream hosting this model)</label>
-    <select id="prov" name="provider_id">
+    <select id="prov" name="provider_id" required>
       <option value="">— select a provider —</option>
       {% for p in providers %}
       <option value="{{ p.id }}">{{ p.label or p.name }}</option>
@@ -19,11 +19,8 @@
     </select>
     <label for="harn">Restrict to harnesses (blank means every harness the provider serves)</label>
     <input type="text" id="harn" name="harnesses" placeholder="claude, codex, dsh">
-    <label for="uri">Target URI (only when no provider is chosen)</label>
-    <input type="text" id="uri" name="target_uri"
-           placeholder="https://...services.ai.azure.com/anthropic/v1/messages">
-    <p>Authentication is configured on the provider.</p>
-    <label for="av">API version (optional — leave blank if it's already in the URI)</label>
+    <p>The provider supplies the host, the path and the authentication.</p>
+    <label for="av">API version (optional)</label>
     <input type="text" id="av" name="api_version" placeholder="2025-04-01-preview">
     <label for="desc">Description (optional)</label>
     <textarea id="desc" name="description" rows="2"></textarea>

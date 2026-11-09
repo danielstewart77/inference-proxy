@@ -1,4 +1,8 @@
-"""app.deployments.resolve_deployment: credential wiring and access gating."""
+"""app.deployments.resolve_deployment: credential wiring and access gating.
+
+A model authenticates through its provider, so each row here is attached to
+one carrying the credential.
+"""
 
 from __future__ import annotations
 
@@ -6,19 +10,27 @@ import pytest
 from fastapi import HTTPException
 
 from app.deployments import resolve_deployment
-from app.orm import Credential, Model
+from app.orm import Credential, Model, Provider
 
 
-async def _add_model(session, **overrides) -> Model:
+async def _add_model(session, *, with_credential: bool = True, **overrides) -> Model:
     cred = Credential(name=f"cred-{overrides.get('deployment_name', 'x')}", kind="static",
                       secret="upstream-secret")
     session.add(cred)
     await session.flush()
+    provider = Provider(
+        name="anthropic",
+        base_url="https://api.anthropic.com",
+        messages_path="/v1/messages",
+        credential_id=cred.id if with_credential else None,
+        auth_scheme="x_api_key",
+        enabled=True,
+    )
+    session.add(provider)
+    await session.flush()
     fields = {
         "deployment_name": "claude-opus",
-        "target_uri": "https://api.anthropic.com/v1/messages",
-        "credential_id": cred.id,
-        "auth_scheme": "x_api_key",
+        "provider_id": provider.id,
         "enabled": True,
         "admin_only": False,
     }
@@ -38,7 +50,7 @@ async def test_resolves_the_secret_from_the_attached_credential(session):
 
 
 async def test_model_with_no_credential_is_unavailable_not_unauthenticated(session):
-    await _add_model(session, credential_id=None)
+    await _add_model(session, with_credential=False)
     with pytest.raises(HTTPException) as exc:
         await resolve_deployment(session, "claude-opus")
     assert exc.value.status_code == 503

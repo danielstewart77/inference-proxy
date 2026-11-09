@@ -72,8 +72,9 @@ def test_a_provider_serving_responses_is_not_sent_down_the_anthropic_detour():
 
 def test_a_messages_only_model_lists_chat_completions_among_its_wires():
     """Requirement 1 — a chat-only picker is offered the Claude models."""
-    row = Model(deployment_name="claude-opus-5", target_uri=ANTHROPIC_URI)
-    row.provider = None
+    row = Model(deployment_name="claude-opus-5")
+    row.provider = _messages_only_provider()
+    row.provider.enabled = True
 
     assert "chat_completions" in wires_for(row)
 
@@ -870,16 +871,11 @@ async def client(monkeypatch):
             base_url="https://api.anthropic.com",
             messages_path="/v1/messages",
             credential_id=credential.id,
+            auth_scheme="x_api_key",
         )
         setup.add(provider)
         await setup.flush()
-        setup.add(
-            Model(
-                deployment_name="claude-opus-5",
-                provider_id=provider.id,
-                auth_scheme="x_api_key",
-            )
-        )
+        setup.add(Model(deployment_name="claude-opus-5", provider_id=provider.id))
         responses = Provider(
             name="openai",
             label="OpenAI",

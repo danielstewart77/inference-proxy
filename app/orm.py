@@ -191,12 +191,15 @@ class Provider(Base):
 
 
 class Model(Base):
-    """Each row is a self-contained deployment: its own target URI, credential,
-    and optional api_version. The path of `target_uri` determines the upstream
-    protocol — `/anthropic/v1/messages` or a real `api.anthropic.com/v1/messages`
-    (Anthropic Messages), `/openai/responses` or a real `api.openai.com/v1/responses`
-    (Responses API), or `/chat/completions` (native). `auth_scheme` determines how
-    the resolved secret is sent upstream — see `app.deployments.build_upstream_headers`.
+    """A deployment the proxy advertises, hosted by exactly one `Provider`.
+
+    The provider supplies the host, the path for each request shape, the
+    credential and the auth scheme; the row owns the name, the pricing and
+    the per-model facts (window, effort levels, images). `target_uri`,
+    `credential_id` and `auth_scheme` are columns from before providers
+    existed and are no longer read: a model without an enabled provider is
+    unavailable, and one with a provider follows that provider's
+    authentication whatever its own columns still hold.
     """
 
     __tablename__ = "models"
@@ -215,8 +218,8 @@ class Model(Base):
         BigInteger().with_variant(Integer, "sqlite"),
         ForeignKey("credentials.id", ondelete="SET NULL"), nullable=True
     )
-    # The upstream that hosts this model. When set it supplies the host, the
-    # credential and the per-shape path, and `target_uri` is ignored.
+    # The upstream that hosts this model: the host, the per-shape path, the
+    # credential and the auth scheme. Required for the model to resolve.
     provider_id: Mapped[Optional[int]] = mapped_column(
         BigInteger().with_variant(Integer, "sqlite"),
         ForeignKey("providers.id", ondelete="SET NULL"), nullable=True

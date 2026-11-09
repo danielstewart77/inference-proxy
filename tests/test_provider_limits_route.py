@@ -471,3 +471,19 @@ def test_the_add_form_offers_thirty_percent_as_the_rotation_threshold(client, mo
     )
     assert 'value="30"' in field
     assert "required" in field
+
+
+def test_the_credentials_page_names_the_models_a_provider_authenticates_with_it(
+    client, monkeypatch,
+):
+    """A model authenticates with its provider's credential, so that is the
+    credential the console must say it uses — not a column the model row no
+    longer reads."""
+    async def _allow(request):
+        return None
+
+    monkeypatch.setattr("app.admin.credentials.require_html_admin", _allow)
+    html = client.get("/admin/credentials").text
+
+    used_by = next(line for line in html.splitlines() if "claude-opus-5" in line)
+    assert "gpt-5.6" in used_by
