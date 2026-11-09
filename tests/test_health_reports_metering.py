@@ -7,15 +7,13 @@ be readable from outside the process or it is the same as no count.
 
 from __future__ import annotations
 
-import pytest
 from fastapi.testclient import TestClient
 
 from app import usage
 from app.main import create_app
-from tests.conftest import requires_postgres
 
 
-def test_health_reports_how_many_usage_rows_were_lost(monkeypatch):
+def test_health_reports_how_many_usage_rows_were_lost(db_maker, monkeypatch):
     monkeypatch.setattr(usage, "_failures", 4)
 
     with TestClient(create_app()) as client:
@@ -24,15 +22,14 @@ def test_health_reports_how_many_usage_rows_were_lost(monkeypatch):
     assert body["metering_failures"] == 4
 
 
-@requires_postgres
-async def test_a_lost_usage_row_increments_the_count(pg_session, monkeypatch):
+async def test_a_lost_usage_row_increments_the_count(session, monkeypatch):
     """The background insert path is the one that loses rows.
 
     It cannot raise -- a request must not fail because its metering did -- so
     the only way the loss is ever visible is the count going up.
     """
     monkeypatch.setattr(usage, "_failures", 0)
-    monkeypatch.setattr(usage, "SessionLocal", lambda: _Reusable(pg_session))
+    monkeypatch.setattr(usage, "SessionLocal", lambda: _Reusable(session))
 
     # A client id no row carries: the foreign key refuses it.
     await usage._insert(

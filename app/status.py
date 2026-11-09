@@ -182,29 +182,20 @@ async def _summary(session: AsyncSession, hours: int = 24) -> dict:
 def _cutoff(hours: int):
     """The lower bound of the window, as an instant.
 
-    Computed here rather than by the database. `datetime('now', ...)` is a
-    SQLite function that Postgres does not have, and an aware value is the
-    only shape both drivers agree on.
+    Computed here rather than by the database, as an aware value: a naive one
+    is encoded by asyncpg as this process' local wall clock.
     """
     return utcnow() - timedelta(hours=hours)
 
 
-def _hour_bucket(session: AsyncSession):
-    """The created_at hour, as the engine this session is on can express it.
-
-    Postgres has `date_trunc`; SQLite has `strftime`. There is no portable
-    spelling, so this is the one place the dialect is named -- and it is read
-    off the connection rather than the process configuration, because the
-    session is what decides which database the query reaches.
-    """
-    if session.bind.dialect.name == "postgresql":
-        return func.date_trunc(literal_column("'hour'"), UsageLog.created_at)
-    return func.strftime("%Y-%m-%dT%H:00:00", UsageLog.created_at)
+def _hour_bucket():
+    """The created_at hour."""
+    return func.date_trunc(literal_column("'hour'"), UsageLog.created_at)
 
 
 async def _timeseries(session: AsyncSession, hours: int = 24) -> dict:
     """The same counts as the summary, one row per hour."""
-    bucket = _hour_bucket(session).label("bucket")
+    bucket = _hour_bucket().label("bucket")
     errored = case(
         (UsageLog.error_type.isnot(None), 1),
         (UsageLog.status_code >= 400, 1),

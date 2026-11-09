@@ -26,7 +26,7 @@ depends_on = None
 
 
 def upgrade() -> None:
-    op.add_column("models", sa.Column("context_window", sa.BigInteger().with_variant(sa.Integer, "sqlite"), nullable=True))
+    op.add_column("models", sa.Column("context_window", sa.BigInteger(), nullable=True))
 
 
 def downgrade() -> None:

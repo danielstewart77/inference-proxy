@@ -10,24 +10,19 @@ from __future__ import annotations
 
 import pytest_asyncio
 from fastapi.testclient import TestClient
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.db import get_session
 from app.main import create_app
-from app.orm import Base
 
 
 @pytest_asyncio.fixture
-async def client(monkeypatch):
+async def client(db_maker, monkeypatch):
     """The app on an empty database: every model name is unregistered."""
     import app.main as main
     import app.proxy.chat_completions as chat_completions
     import app.proxy.anthropic as anthropic
 
-    engine = create_async_engine("sqlite+aiosqlite://", future=True)
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-    maker = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
+    maker = db_maker
 
     async def _session():
         async with maker() as s:
@@ -44,7 +39,6 @@ async def client(monkeypatch):
     app.dependency_overrides[get_session] = _session
     with TestClient(app) as c:
         yield c
-    await engine.dispose()
 
 
 def test_chat_completions_names_the_model_where_the_openai_sdk_reads_it(client):

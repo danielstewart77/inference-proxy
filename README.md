@@ -69,19 +69,22 @@ and models can target `api.openai.com` directly.
 ## Running it
 
 ```bash
-cp .env.example .env        # set ADMIN_USERNAME, ADMIN_PASSWORD, SESSION_SECRET
+cp .env.example .env        # set DATABASE_URL, ADMIN_USERNAME, ADMIN_PASSWORD, SESSION_SECRET
 pip install -r requirements.txt
-python -m app.entrypoint
+PROXY_ALLOW_SCHEMA_CREATE=true python -m app.entrypoint   # first start only
 ```
 
-The schema is created on first start — SQLite, one file at `DB_PATH`, no
-database server to stand up. Then sign into `/login` and, under `/admin`,
-add a credential, add a model that uses it, add a client, and mint that client
-a key.
+The proxy runs on Postgres only: `DATABASE_URL` names the database and
+`DB_SCHEMA` (default `proxy`) the schema its tables live in. The first start of
+a fresh install creates the schema when `PROXY_ALLOW_SCHEMA_CREATE=true`;
+every later start migrates it to head and refuses an empty one. Then sign into
+`/login` and, under `/admin`, add a credential, a provider that uses it, a
+model on that provider, a client, and mint that client a key.
 
 Docker is supported too, with `docker compose up -d --build`. The default
-compose file is safe on a fresh clone: it persists `data/`, does not require a
-`.env` file just to start, and does not mount any host credentials. Copy
+compose file is safe on a fresh clone: it does not require a `.env` file just
+to build, and does not mount any host credentials; the database is the
+Postgres `DATABASE_URL` names. Copy
 `.env.example` to `.env` and replace the admin and session placeholders before
 exposing the service beyond localhost.
 
@@ -192,7 +195,7 @@ app/
   orm.py           clients · keys · credentials · models · usage_log
   proxy/           anthropic · responses · chat_completions · compact · websocket
   admin/           the HTML console
-migrations/        alembic, SQLite
+migrations/        alembic, Postgres
 tests/             pytest
 ```
 
@@ -200,9 +203,14 @@ tests/             pytest
 
 ```bash
 pip install -r requirements-dev.txt
-pytest
+PROXY_TEST_ADMIN_DSN=postgresql://user:password@127.0.0.1:5433/hive pytest
 ```
 
+The suite runs on Postgres. `PROXY_TEST_ADMIN_DSN`, read from the environment
+and never from `.env`, names a server it may create and drop a database on;
+each run creates a `proxy_test_*` database of its own and drops it afterwards,
+and refuses to point a test at any other database.
+
 The repository's complete published history is scanned with Gitleaks before a
-release. Runtime secrets, generated TLS keys, logs, and the SQLite database are
-excluded by `.gitignore` and must never be committed.
+release. Runtime secrets, generated TLS keys, logs, and the retired SQLite
+files under `data/` are excluded by `.gitignore` and must never be committed.

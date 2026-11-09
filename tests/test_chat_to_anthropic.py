@@ -16,7 +16,6 @@ import httpx
 import pytest
 import pytest_asyncio
 from fastapi.testclient import TestClient
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.db import get_session
 from app.deployments import (
@@ -27,7 +26,7 @@ from app.deployments import (
     wires_for,
 )
 from app.main import create_app
-from app.orm import Base, Credential, Model, Provider
+from app.orm import Credential, Model, Provider
 from app.proxy.chat_to_anthropic import (
     UntranslatableRequest,
     stream_anthropic_to_completions,
@@ -852,14 +851,11 @@ async def test_a_streamed_turn_reports_its_token_counts_for_metering():
 
 
 @pytest_asyncio.fixture
-async def client(monkeypatch):
+async def client(db_maker, monkeypatch):
     """The app on a fresh database, holding one Anthropic-wire deployment."""
     import app.main as main
 
-    engine = create_async_engine("sqlite+aiosqlite://", future=True)
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-    maker = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
+    maker = db_maker
 
     async with maker() as setup:
         credential = Credential(name="anthropic", kind="static", secret="s")
@@ -903,7 +899,6 @@ async def client(monkeypatch):
     app.dependency_overrides[get_session] = _session
     with TestClient(app) as c:
         yield c
-    await engine.dispose()
 
 
 def test_an_upstream_refusal_reaches_the_caller_in_its_own_words(client, monkeypatch):

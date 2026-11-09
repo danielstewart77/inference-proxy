@@ -19,10 +19,11 @@ removed. If you find a stale reference to any of that, delete it.
 - **Tests land with the code.** Not as a follow-up. `pytest` must be green
   before anything is committed; a test that fails because the API moved gets
   patched or deleted, never skipped.
-- **Migrations are Alembic, on SQLite.** `render_as_batch` is on because SQLite
-  cannot `ALTER` most column properties. `BigInteger` must carry
-  `.with_variant(Integer, "sqlite")` on any autoincrement primary key —
-  SQLite only autoincrements a column declared exactly `INTEGER PRIMARY KEY`.
+- **Postgres is the only engine.** `DATABASE_URL` is required and the tables
+  live in `DB_SCHEMA`. Migrations are Alembic. The suite runs on a scratch
+  database it creates from `PROXY_TEST_ADMIN_DSN` (process environment only,
+  never `.env`); never point a test at the live database or the `proxy`
+  schema.
 - **Never render a secret back to a page.** The admin console shows a masked
   placeholder and only writes a column when a non-empty value is submitted.
   A newly minted proxy key is the one exception, shown once at mint time.
