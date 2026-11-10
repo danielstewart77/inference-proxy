@@ -177,6 +177,14 @@ HARNESS_FOR_WIRE = {
 #: Every request shape the proxy knows, in listing order.
 ALL_WIRES = ("anthropic_messages", "openai_responses", "chat_completions")
 
+#: The embeddings shape. Not a chat wire and spoken by no harness: only a
+#: model of purpose 'embedding' is reached on it, and such a model is reached
+#: on nothing else.
+EMBEDDINGS_WIRE = "embeddings"
+
+#: What a model can be for, as `models.purpose` stores it.
+PURPOSES = ("chat", "embedding")
+
 #: Which shapes each harness can actually send. A listing is filtered to the
 #: caller's own shapes so a picker never offers a model the caller cannot
 #: address. Hermes speaks all three — it carries a transport per wire and
@@ -258,6 +266,8 @@ def wires_for(row: Model) -> list[str]:
     that named only the asker's shape would make the same model look
     different to two callers.
     """
+    if row.purpose == "embedding":
+        return [EMBEDDINGS_WIRE] if resolve_target_uri(row, EMBEDDINGS_WIRE) else []
     served = []
     for wire in ALL_WIRES:
         if resolve_target_uri(row, wire):
@@ -355,6 +365,11 @@ async def resolve_deployment(
         # same reason an admin-only row is: a refusal that differs from a
         # miss is an enumeration oracle.
         _raise(error_kind, 404, f"Model {name!r} is not registered")
+    if wire is not None and (row.purpose == "embedding") != (wire == EMBEDDINGS_WIRE):
+        # An embedding model sent a chat turn, or a chat model asked for
+        # vectors: the upstream would answer either with its own confusion.
+        kind = "an embedding" if row.purpose == "embedding" else "a chat"
+        _raise(error_kind, 400, f"Model {name!r} is {kind} model and is not served on this route")
     target_uri = resolve_target_uri(row, wire)
     if not target_uri:
         _raise(error_kind, 503, f"Model {name!r} has no upstream URI configured")
@@ -379,7 +394,11 @@ async def resolve_deployment(
 
 
 async def listing_for(
-    session: AsyncSession, *, harness: Optional[str] = None, is_admin: bool
+    session: AsyncSession,
+    *,
+    harness: Optional[str] = None,
+    is_admin: bool,
+    purpose: Optional[str] = None,
 ) -> dict:
     """Every model `harness` may address, each naming the shapes it speaks.
 
@@ -395,11 +414,16 @@ async def listing_for(
     `harness=None` is the unfiltered union: every enabled model this key can
     reach. It applies no `harnesses` withholding, because withholding answers
     the question "may *this* harness see it", and a caller that did not say
-    who it is has not asked that question.
+    who it is has not asked that question. Embedding models appear only in the
+    union, since no harness speaks the embeddings wire.
+
+    `purpose` keeps only the models of that purpose ('chat' or 'embedding').
     """
     if harness is not None and harness not in HARNESS_WIRES:
         _raise("openai", 400, f"Unknown harness {harness!r}")
-    wanted = set(HARNESS_WIRES[harness]) if harness else set(ALL_WIRES)
+    if purpose is not None and purpose not in PURPOSES:
+        _raise("openai", 400, f"Unknown purpose {purpose!r}; use {' or '.join(PURPOSES)}")
+    wanted = set(HARNESS_WIRES[harness]) if harness else {*ALL_WIRES, EMBEDDINGS_WIRE}
     now = int(time.time())
     stmt = (
         select(Model)
@@ -409,6 +433,8 @@ async def listing_for(
     )
     if not is_admin:
         stmt = stmt.where(Model.admin_only.is_(False))
+    if purpose is not None:
+        stmt = stmt.where(Model.purpose == purpose)
     data = []
     for row in (await session.execute(stmt)).scalars().all():
         wires = [wire for wire in wires_for(row) if wire in wanted]
@@ -443,6 +469,7 @@ async def listing_for(
                 "provider_label": (provider.label or provider.name) if provider else None,
                 "label": row.label,
                 "description": row.description,
+                "purpose": row.purpose,
                 "wires": wires,
                 "context_window": row.context_window,
                 # The percentage of that window a conversation on this model

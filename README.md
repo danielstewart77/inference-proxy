@@ -93,6 +93,8 @@ python -m app.cli add-model --provider anthropic --model claude-sonnet-4-5 --con
 python -m app.cli mint-key --client my-mind --kind mind    # prints the key once
 python -m app.cli list-models --harness dsh                # what GET /v1/models?harness=dsh answers
 python -m app.cli check-model --model claude-sonnet-4-5    # one small completion; the upstream's status
+python -m app.cli add-model --provider local --model qwen3-embedding:8b --context-window 32768 --purpose embedding
+python -m app.cli check-model --model qwen3-embedding:8b   # one real embedding; reports "dimensions"
 ```
 
 The key is read from the environment (`--api-key-env NAME`) or from stdin
@@ -102,7 +104,10 @@ instead of reusing it — the provider's address, scheme and (if given) key; the
 model's provider, context window and any other value given — through the same
 functions as the console's edit forms. `check-model` sends one completion
 through the proxy's own forwarding code and exits 0 on a 200, or 2 with the
-upstream's `status` (401 for a bad key) and its message.
+upstream's `status` (401 for a bad key) and its message. On an embedding
+model it sends one embedding instead and reports `{"ok","status","dimensions"}`.
+`--purpose chat|embedding` (default `chat`) declares what a model is for;
+`--update` changes it only when given.
 
 `--kind` is `anthropic`, `openai` or `ollama`; it sets the paths and auth
 scheme, and Anthropic and OpenAI default to their public APIs. `mint-key` on a
@@ -158,8 +163,14 @@ Anything that speaks OpenAI does the same with `OPENAI_BASE_URL` and
 `OPENAI_API_KEY`. Keys are accepted as `Authorization: Bearer`, `api-key`, or
 `x-api-key`, so a client sends whichever its SDK already sends.
 
-`GET /v1/models` lists every deployment, and `?harness=claude|codex|dsh`
-narrows it to what that harness can send; it requires a valid proxy key and
+`POST /v1/embeddings` takes the OpenAI shape (`{"model","input": str|[str]}`)
+with the same client keys as chat and forwards it to the provider's
+embeddings path (`/v1/embeddings` for Ollama and OpenAI). Only a model of
+purpose `embedding` resolves there, and such a model resolves on no chat route.
+
+`GET /v1/models` lists every deployment, each entry carrying `purpose`;
+`?purpose=chat|embedding` keeps one kind, and `?harness=claude|codex|dsh`
+narrows it to what that harness can send (never an embedding model); it requires a valid proxy key and
 hides admin-only rows from unprivileged clients. `GET /v1/anthropic/models` is
 retired and answers 410. `GET /health` is
 unauthenticated, and `/status` is a public health and throughput page carrying

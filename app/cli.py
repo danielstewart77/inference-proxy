@@ -18,7 +18,9 @@ from stdin and `--api-key-env NAME` from the environment.
 
 `check-model` sends one small completion through the proxy's own forwarding
 code (`forward_chat_completion`) and reports the upstream's status, so a wrong
-key or address is found before the proxy is called ready.
+key or address is found before the proxy is called ready. For a model of
+purpose embedding it sends one embedding (`forward_embeddings`) instead and
+reports the vector's `dimensions`.
 
 Exit status: 0 on success, 2 when the input is refused or a checked model did
 not answer (the JSON carries the reason, and the status where there is one), 1
@@ -45,7 +47,7 @@ from app.admin.models import apply_model_update, insert_model
 from app.admin.providers import apply_provider_update, insert_provider
 from app.azure import close_shared_client
 from app.db import SessionLocal, dispose_engine
-from app.deployments import HARNESS_WIRES, listing_for
+from app.deployments import HARNESS_WIRES, PURPOSES, listing_for
 from app.orm import ApiKey, Client, Credential, Model, Provider
 
 #: What a provider kind means as a row: where it lives by default, the paths
@@ -64,6 +66,7 @@ PROVIDER_KINDS: dict[str, dict[str, Any]] = {
         "auth_scheme": "bearer",
         "responses_path": "/v1/responses",
         "chat_completions_path": "/v1/chat/completions",
+        "embeddings_path": "/v1/embeddings",
         "label": "OpenAI",
         "key_required": True,
     },
@@ -73,6 +76,7 @@ PROVIDER_KINDS: dict[str, dict[str, Any]] = {
         "messages_path": "/v1/messages",
         "responses_path": "/v1/responses",
         "chat_completions_path": "/v1/chat/completions",
+        "embeddings_path": "/v1/embeddings",
         "label": "Ollama",
         "key_required": False,
     },
@@ -114,6 +118,7 @@ def _provider_json(row: Provider) -> dict:
         "messages_path": row.messages_path,
         "responses_path": row.responses_path,
         "chat_completions_path": row.chat_completions_path,
+        "embeddings_path": row.embeddings_path,
         "auth_scheme": row.auth_scheme,
         "enabled": row.enabled,
     }
@@ -129,6 +134,7 @@ def _model_json(row: Model, provider_name: str) -> dict:
         "harnesses": row.harnesses,
         "effort_levels": row.effort_levels,
         "accepts_images": row.accepts_images,
+        "purpose": row.purpose,
         "enabled": row.enabled,
         "admin_only": row.admin_only,
     }
@@ -186,6 +192,7 @@ async def add_provider(
         messages_path=preset.get("messages_path") or "",
         responses_path=preset.get("responses_path") or "",
         chat_completions_path=preset.get("chat_completions_path") or "",
+        embeddings_path=preset.get("embeddings_path") or "",
         credential_id=str(credential.id),
         auth_scheme=preset["auth_scheme"],
     )
@@ -228,6 +235,7 @@ async def _update_provider(
         messages_path=preset.get("messages_path") or "",
         responses_path=preset.get("responses_path") or "",
         chat_completions_path=preset.get("chat_completions_path") or "",
+        embeddings_path=preset.get("embeddings_path") or "",
         credential_id=str(credential_id),
         auth_scheme=preset["auth_scheme"],
         api_version=row.api_version or "",
@@ -247,6 +255,7 @@ async def add_model(
     effort_levels: Optional[str] = None,
     accepts_images: Optional[str] = None,
     harnesses: Optional[str] = None,
+    purpose: Optional[str] = None,
     update: bool = False,
 ) -> dict:
     """Model `model` hosted by provider `provider`. An existing model of that
@@ -276,6 +285,7 @@ async def add_model(
                 accepts_images,
                 {True: "yes", False: "no"}.get(existing.accepts_images, "")),
             harnesses=_given(harnesses, existing.harnesses),
+            purpose=_given(purpose, existing.purpose),
             api_version=_given(None, existing.api_version),
             description=_given(None, existing.description),
             cost_per_million_input=_given(None, existing.cost_per_million_input),
@@ -298,6 +308,7 @@ async def add_model(
         effort_levels=effort_levels or "",
         accepts_images=accepts_images or "",
         harnesses=harnesses or "",
+        purpose=purpose or "",
     )
     return {"created": True, "updated": False, "model": _model_json(row, host.name)}
 
@@ -346,11 +357,15 @@ async def mint_key(
 
 
 async def list_models(
-    session: AsyncSession, *, harness: Optional[str] = None, admin: bool = False
+    session: AsyncSession,
+    *,
+    harness: Optional[str] = None,
+    admin: bool = False,
+    purpose: Optional[str] = None,
 ) -> dict:
     """Exactly what `GET /v1/models` answers: an ordinary key unless `admin`,
     which is a privileged one and sees admin-only models too."""
-    return await listing_for(session, harness=harness, is_admin=admin)
+    return await listing_for(session, harness=harness, is_admin=admin, purpose=purpose)
 
 
 async def check_model(session: AsyncSession, *, model: str, harness: str = "dsh") -> dict:
@@ -360,8 +375,28 @@ async def check_model(session: AsyncSession, *, model: str, harness: str = "dsh"
     as a privileged caller, so an admin-only model can be checked too.
 
     Answers the upstream's 200; anything else is refused with its status and
-    the upstream's own words."""
+    the upstream's own words.
+
+    An embedding model is checked with one real embedding instead, through
+    `forward_embeddings`, and reports the length of the vector it returned."""
     from app.proxy.chat_completions import forward_chat_completion
+    from app.proxy.embeddings import forward_embeddings
+
+    purpose = (
+        await session.execute(select(Model.purpose).where(Model.deployment_name == model))
+    ).scalar_one_or_none()
+    if purpose == "embedding":
+        answer = await forward_embeddings(
+            session, {"model": model, "input": CHECK_PROMPT}, model=model, is_admin=True)
+        payload = _refuse_unless_200(model, answer)
+        vectors = payload.get("data") if isinstance(payload, dict) else None
+        embedding = (vectors or [{}])[0].get("embedding") if vectors else None
+        if not isinstance(embedding, list) or not embedding:
+            raise Refused(
+                f"model {model!r}: the upstream answered 200 with no embedding",
+                model=model, status=200, upstream=payload,
+            )
+        return {"model": model, "ok": True, "status": 200, "dimensions": len(embedding)}
 
     body = {
         "model": model,
@@ -370,6 +405,17 @@ async def check_model(session: AsyncSession, *, model: str, harness: str = "dsh"
     }
     answer = await forward_chat_completion(
         session, body, model=model, harness=harness, is_admin=True)
+    payload = _refuse_unless_200(model, answer)
+    reply = None
+    if isinstance(payload, dict):
+        choices = payload.get("choices") or [{}]
+        reply = ((choices[0] or {}).get("message") or {}).get("content")
+    return {"model": model, "ok": True, "status": 200, "reply": reply}
+
+
+def _refuse_unless_200(model: str, answer: Any) -> Any:
+    """The upstream's parsed body when it answered 200; otherwise refused
+    with its status and its own words."""
     payload: Any = None
     try:
         payload = json.loads(answer.body)
@@ -386,11 +432,7 @@ async def check_model(session: AsyncSession, *, model: str, harness: str = "dsh"
             + (f": {message}" if message else ""),
             model=model, status=answer.status_code, upstream=payload,
         )
-    reply = None
-    if isinstance(payload, dict):
-        choices = payload.get("choices") or [{}]
-        reply = ((choices[0] or {}).get("message") or {}).get("content")
-    return {"model": model, "ok": True, "status": 200, "reply": reply}
+    return payload
 
 
 def _api_key(args: argparse.Namespace) -> Optional[str]:
@@ -434,6 +476,8 @@ def _parser() -> argparse.ArgumentParser:
     m.add_argument("--accepts-images", default=None, choices=["", "yes", "no", "unknown"])
     m.add_argument("--harnesses", default=None,
                    help="comma-separated harnesses to restrict to; blank is every harness")
+    m.add_argument("--purpose", default=None, choices=list(PURPOSES),
+                   help="chat (default for a new model) or embedding")
     m.add_argument("--update", action="store_true",
                    help="rewrite an existing model: its provider, context window and "
                         "whichever other values are given")
@@ -447,6 +491,7 @@ def _parser() -> argparse.ArgumentParser:
     lm = sub.add_parser("list-models", help="what GET /v1/models answers")
     lm.add_argument("--harness", default=None, choices=sorted(HARNESS_WIRES))
     lm.add_argument("--admin", action="store_true", help="as a privileged key")
+    lm.add_argument("--purpose", default=None, choices=list(PURPOSES))
 
     c = sub.add_parser("check-model", help="send one small completion and report the upstream status")
     c.add_argument("--model", required=True)
@@ -468,14 +513,15 @@ async def _dispatch(args: argparse.Namespace) -> dict:
                 rotation_threshold_percent=args.rotation_threshold_percent,
                 label=args.label, effort_levels=args.effort_levels,
                 accepts_images=args.accepts_images, harnesses=args.harnesses,
-                update=args.update)
+                purpose=args.purpose, update=args.update)
         if args.command == "mint-key":
             return await mint_key(
                 session, client=args.client, kind=args.kind,
                 privileged=args.privileged, label=args.label)
         if args.command == "check-model":
             return await check_model(session, model=args.model, harness=args.harness)
-        return await list_models(session, harness=args.harness, admin=args.admin)
+        return await list_models(
+            session, harness=args.harness, admin=args.admin, purpose=args.purpose)
 
 
 def _detail(exc: HTTPException) -> str:

@@ -38,6 +38,7 @@ APP_TABLES = {"clients", "keys", "credentials", "models", "providers", "usage_lo
 #: band carries no bookkeeping row, so the only way to know where it stands is
 #: to look at what it has. The newest marker present is the revision it is at.
 REVISION_MARKERS: tuple[tuple[str, str, str], ...] = (
+    ("0011_model_purpose", "models", "purpose"),
     # 0010 adds no column, so it has no marker. A schema at 0010 reads as
     # 0009 and the upgrade re-runs 0010, which is why that migration looks
     # before it creates anything.

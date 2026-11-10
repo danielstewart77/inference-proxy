@@ -84,12 +84,15 @@ async def _resolve_credential_id(
     return credential_id
 
 
-def _paths(messages: str, responses: str, chat: str) -> dict[str, Optional[str]]:
+def _paths(
+    messages: str, responses: str, chat: str, embeddings: str = ""
+) -> dict[str, Optional[str]]:
     """At least one shape, or the provider can serve nobody."""
     values = {
         "messages_path": _optional(messages, max_len=256),
         "responses_path": _optional(responses, max_len=256),
         "chat_completions_path": _optional(chat, max_len=256),
+        "embeddings_path": _optional(embeddings, max_len=256),
     }
     if not any(values.values()):
         raise HTTPException(
@@ -133,6 +136,7 @@ async def insert_provider(
     messages_path: str = "",
     responses_path: str = "",
     chat_completions_path: str = "",
+    embeddings_path: str = "",
     credential_id: str = "",
     auth_scheme: str = "bearer",
     api_version: str = "",
@@ -154,7 +158,7 @@ async def insert_provider(
         auth_scheme=_auth_scheme(auth_scheme),
         api_version=_optional(api_version, max_len=64),
         enabled=enabled,
-        **_paths(messages_path, responses_path, chat_completions_path),
+        **_paths(messages_path, responses_path, chat_completions_path, embeddings_path),
     )
     session.add(row)
     await session.commit()
@@ -170,6 +174,7 @@ async def apply_provider_update(
     messages_path: str,
     responses_path: str,
     chat_completions_path: str,
+    embeddings_path: str,
     credential_id: str,
     auth_scheme: str,
     api_version: str,
@@ -185,7 +190,7 @@ async def apply_provider_update(
     target.api_version = _optional(api_version, max_len=64)
     target.enabled = enabled
     for column, value in _paths(
-        messages_path, responses_path, chat_completions_path
+        messages_path, responses_path, chat_completions_path, embeddings_path
     ).items():
         setattr(target, column, value)
     await session.commit()
@@ -201,6 +206,7 @@ async def add_provider(
     messages_path: str = Form(""),
     responses_path: str = Form(""),
     chat_completions_path: str = Form(""),
+    embeddings_path: str = Form(""),
     credential_id: str = Form(""),
     auth_scheme: str = Form("bearer"),
     api_version: str = Form(""),
@@ -216,6 +222,7 @@ async def add_provider(
         messages_path=messages_path,
         responses_path=responses_path,
         chat_completions_path=chat_completions_path,
+        embeddings_path=embeddings_path,
         credential_id=credential_id,
         auth_scheme=auth_scheme,
         api_version=api_version,
@@ -233,6 +240,7 @@ async def update_provider(
     messages_path: str = Form(""),
     responses_path: str = Form(""),
     chat_completions_path: str = Form(""),
+    embeddings_path: str = Form(""),
     credential_id: str = Form(""),
     auth_scheme: str = Form("bearer"),
     api_version: str = Form(""),
@@ -253,6 +261,7 @@ async def update_provider(
         messages_path=messages_path,
         responses_path=responses_path,
         chat_completions_path=chat_completions_path,
+        embeddings_path=embeddings_path,
         credential_id=credential_id,
         auth_scheme=auth_scheme,
         api_version=api_version,
