@@ -112,13 +112,15 @@ def test_a_schema_one_migration_behind_is_stamped_there_and_upgraded(
     bootstrap_schema(dsn=sync_dsn(PG_DSN), schema=pg_schema)
     engine = _conn(pg_schema)
     with engine.begin() as conn:
-        conn.execute(text("ALTER TABLE providers DROP COLUMN systemone_path"))
+        conn.execute(text("ALTER TABLE models DROP COLUMN purpose"))
+        conn.execute(text("ALTER TABLE providers DROP COLUMN embeddings_path"))
         conn.execute(text("DROP TABLE alembic_version"))
     engine.dispose()
 
     bootstrap_schema(dsn=sync_dsn(PG_DSN), schema=pg_schema)
 
-    assert ("providers", "systemone_path") in _columns(pg_schema)
+    assert ("models", "purpose") in _columns(pg_schema)
+    assert ("providers", "embeddings_path") in _columns(pg_schema)
 
 
 def test_every_revision_is_recognised_by_the_column_it_introduced(pg_schema):

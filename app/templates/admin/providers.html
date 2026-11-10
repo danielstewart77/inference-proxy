@@ -37,6 +37,8 @@
     </div>
     <label for="new-chat">Chat-completions path</label>
     <input type="text" id="new-chat" name="chat_completions_path" placeholder="/v1/chat/completions">
+    <label for="new-embeddings">Embeddings path</label>
+    <input type="text" id="new-embeddings" name="embeddings_path" placeholder="/v1/embeddings">
     <label for="new-auth">Auth scheme</label>
     <select id="new-auth" name="auth_scheme">
       <option value="api_key_header">api-key header (Azure / Foundry)</option>
@@ -94,6 +96,8 @@
     </div>
     <label for="chat-{{ p.id }}">Chat-completions path</label>
     <input type="text" id="chat-{{ p.id }}" name="chat_completions_path" value="{{ p.chat_completions_path or '' }}">
+    <label for="emb-{{ p.id }}">Embeddings path</label>
+    <input type="text" id="emb-{{ p.id }}" name="embeddings_path" value="{{ p.embeddings_path or '' }}">
     <label for="auth-{{ p.id }}">Auth scheme</label>
     <select id="auth-{{ p.id }}" name="auth_scheme">
       {% for scheme in ('api_key_header', 'bearer', 'x_api_key') %}

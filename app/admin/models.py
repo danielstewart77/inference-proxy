@@ -12,7 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth import require_html_admin
 from app.db import get_session
-from app.deployments import WITHHOLDABLE_HARNESSES
+from app.deployments import PURPOSES, WITHHOLDABLE_HARNESSES
 from app.orm import Model, Provider
 from app.templating import templates
 
@@ -173,6 +173,19 @@ def _parse_accepts_images(raw: Optional[str]) -> Optional[bool]:
     return _ACCEPTS_IMAGES[key]
 
 
+def _parse_purpose(raw: Optional[str]) -> str:
+    """'chat' or 'embedding'; blank is chat, which every model was before
+    the column existed. Anything else is refused, since a typo stored would
+    take a chat model off every harness's picker."""
+    value = (raw or "").strip().lower() or "chat"
+    if value not in PURPOSES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid purpose: {raw!r}. Use {', '.join(PURPOSES)}.",
+        )
+    return value
+
+
 def _parse_decimal(raw: Optional[str]) -> Optional[Decimal]:
     if raw is None or raw.strip() == "":
         return None
@@ -278,6 +291,7 @@ async def insert_model(
     cost_per_million_cache_read: str = "",
     effort_levels: str = "",
     accepts_images: str = "",
+    purpose: str = "",
     enabled: bool = True,
     admin_only: bool = False,
 ) -> Model:
@@ -312,6 +326,7 @@ async def insert_model(
         rotation_threshold_percent=_parse_rotation_threshold(rotation_threshold_percent),
         effort_levels=_parse_effort_levels(effort_levels),
         accepts_images=_parse_accepts_images(accepts_images),
+        purpose=_parse_purpose(purpose),
     )
     session.add(row)
     await session.commit()
@@ -335,6 +350,7 @@ async def add_model(
     rotation_threshold_percent: str = Form(""),
     effort_levels: str = Form(""),
     accepts_images: str = Form(""),
+    purpose: str = Form(""),
     enabled: str = Form("on"),
     admin_only: str = Form(""),
     session: AsyncSession = Depends(get_session),
@@ -356,6 +372,7 @@ async def add_model(
         rotation_threshold_percent=rotation_threshold_percent,
         effort_levels=effort_levels,
         accepts_images=accepts_images,
+        purpose=purpose,
         enabled=(enabled == "on"),
         admin_only=(admin_only == "on"),
     )
@@ -379,6 +396,7 @@ async def apply_model_update(
     rotation_threshold_percent: str,
     effort_levels: str,
     accepts_images: str,
+    purpose: str,
     enabled: bool,
     admin_only: bool,
 ) -> Model:
@@ -398,6 +416,7 @@ async def apply_model_update(
     target.rotation_threshold_percent = _parse_rotation_threshold(rotation_threshold_percent)
     target.effort_levels = _parse_effort_levels(effort_levels)
     target.accepts_images = _parse_accepts_images(accepts_images)
+    target.purpose = _parse_purpose(purpose)
     target.cost_per_million_input = _parse_decimal(cost_per_million_input)
     target.cost_per_million_output = _parse_decimal(cost_per_million_output)
     target.cost_per_million_cache_write = _parse_decimal(cost_per_million_cache_write)
@@ -423,6 +442,7 @@ async def update_model(
     rotation_threshold_percent: str = Form(""),
     effort_levels: str = Form(""),
     accepts_images: str = Form(""),
+    purpose: str = Form(""),
     enabled: str = Form(""),  # checkbox: "on" if checked, "" if not
     admin_only: str = Form(""),  # checkbox: "on" if checked, "" if not
     session: AsyncSession = Depends(get_session),
@@ -450,6 +470,7 @@ async def update_model(
         rotation_threshold_percent=rotation_threshold_percent,
         effort_levels=effort_levels,
         accepts_images=accepts_images,
+        purpose=purpose,
         enabled=(enabled == "on"),
         admin_only=(admin_only == "on"),
     )

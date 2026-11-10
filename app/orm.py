@@ -166,6 +166,9 @@ class Provider(Base):
     # refuses the request rather than sending a decision call to an endpoint
     # that would answer it as chat.
     systemone_path: Mapped[Optional[str]] = mapped_column(Unicode(256), nullable=True)
+    # The embeddings wire (OpenAI `/v1/embeddings` shape). NULL is a provider
+    # that serves no embedding model.
+    embeddings_path: Mapped[Optional[str]] = mapped_column(Unicode(256), nullable=True)
     credential_id: Mapped[Optional[int]] = mapped_column(
         BigInteger(),
         ForeignKey("credentials.id", ondelete="SET NULL"), nullable=True
@@ -186,6 +189,7 @@ class Provider(Base):
             "openai_responses": self.responses_path,
             "chat_completions": self.chat_completions_path,
             "systemone": self.systemone_path,
+            "embeddings": self.embeddings_path,
         }.get(wire)
 
 
@@ -281,6 +285,12 @@ class Model(Base):
     # surface offering levels for it would hand the harness a flag the model
     # rejects.
     effort_levels: Mapped[Optional[str]] = mapped_column(Unicode(128), nullable=True)
+    # What the model is for: 'chat' (every wire but embeddings) or 'embedding'
+    # (the embeddings wire only). A harness is never offered an embedding
+    # model, and neither route forwards to a model of the other purpose.
+    purpose: Mapped[str] = mapped_column(
+        Unicode(16), nullable=False, default="chat", server_default="chat"
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now()
     )
 

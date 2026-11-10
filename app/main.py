@@ -33,7 +33,7 @@ from app.config import config
 from app.db import SessionLocal, get_session
 from app.deployments import listing_for, provider_limits_report
 from app.orm import Model
-from app.proxy import anthropic, chat_completions, compact, responses, systemone
+from app.proxy import anthropic, chat_completions, compact, embeddings, responses, systemone
 from app.proxy import websocket as ws_router
 from app.retention import usage_prune_loop
 from app.status import connectivity_probe_loop
@@ -153,6 +153,7 @@ def create_app() -> FastAPI:
     @app.get("/v1/models")
     async def list_models(
         harness: str | None = None,
+        purpose: str | None = None,
         authorization: str | None = Header(None, alias="Authorization"),
         api_key: str | None = Header(None, alias="api-key"),
         x_api_key: str | None = Header(None, alias="x-api-key"),
@@ -162,10 +163,12 @@ def create_app() -> FastAPI:
 
         `harness` narrows the answer to the shapes that caller can send and
         applies per-model withholding. Omitting it returns the union, which
-        is what a client speaking every shape wants.
+        is what a client speaking every shape wants. `purpose` (chat or
+        embedding) keeps only the models of that purpose.
         """
         is_admin = _require_listing_role(authorization, api_key, x_api_key)
-        return await listing_for(session, harness=harness, is_admin=is_admin)
+        return await listing_for(
+            session, harness=harness, is_admin=is_admin, purpose=purpose)
 
     @app.get("/v1/providers/limits")
     async def provider_limit_report(
@@ -207,6 +210,7 @@ def create_app() -> FastAPI:
 
     # ---- Proxy routers (auth via proxy API key, no session) -----------------
     app.include_router(chat_completions.router)
+    app.include_router(embeddings.router)
     app.include_router(responses.router)
     app.include_router(compact.router)
     app.include_router(systemone.router)

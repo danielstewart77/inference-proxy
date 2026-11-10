@@ -59,6 +59,14 @@
         </select>
       </div>
       <div>
+        <label>Purpose</label>
+        <select name="purpose">
+          {% for purpose in ('chat', 'embedding') %}
+          <option value="{{ purpose }}" {% if m.purpose == purpose %}selected{% endif %}>{{ purpose }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div>
         <label>Effort levels</label>
         <input type="text" name="effort_levels" value="{{ m.effort_levels or '' }}">
       </div>

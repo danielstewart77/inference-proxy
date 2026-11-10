@@ -53,4 +53,5 @@ credential and auth scheme, never with columns of its own.
 the `insert_*`, `apply_*_update` and `issue_key` functions the console's form
 routes call; a create or update path's validation lives in that function, never
 in the route or the CLI, so the two cannot drift. `check-model` goes through
-`forward_chat_completion`, the chat route's own body after authentication.
+`forward_chat_completion`, the chat route's own body after authentication, or for an embedding model through
+`forward_embeddings`, the embeddings route's.
