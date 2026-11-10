@@ -590,10 +590,39 @@ async def _handle_completions(
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid JSON in request body")
 
-    model = deployment_override or body.get("model")
+    return await forward_chat_completion(
+        session, body,
+        model=deployment_override or body.get("model"),
+        harness=request.headers.get(HARNESS_HEADER),
+        is_admin=is_admin, principal=principal, request=request,
+        started_at=started_at,
+    )
+
+
+async def forward_chat_completion(
+    session: AsyncSession,
+    body: dict,
+    *,
+    model: Optional[str],
+    harness: Optional[str] = None,
+    is_admin: bool = False,
+    principal: Optional[tuple[int, int]] = None,
+    request: Optional[Request] = None,
+    started_at: Optional[float] = None,
+):
+    """Send a Chat Completions body for `model` to its upstream, translating
+    onto the provider's own shape, and answer in Chat Completions.
+
+    Everything after the caller is authenticated: the route calls it for every
+    request, and `app.cli check-model` calls it to prove a model answers
+    before an install calls the proxy ready. With no `principal` nothing is
+    metered.
+    """
+    if started_at is None:
+        started_at = time.time()
     target = await resolve_deployment(
         session, model, is_admin=is_admin, wire="chat_completions",
-        harness=request.headers.get(HARNESS_HEADER),
+        harness=harness,
     )
     reject_wrong_protocol(target, expected="chat_completions_any")
 

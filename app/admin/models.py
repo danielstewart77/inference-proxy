@@ -362,6 +362,50 @@ async def add_model(
     return RedirectResponse("/admin/models", status_code=303)
 
 
+async def apply_model_update(
+    session: AsyncSession,
+    target: Model,
+    *,
+    provider_id: str,
+    harnesses: str,
+    api_version: str,
+    label: str,
+    description: str,
+    cost_per_million_input: str,
+    cost_per_million_output: str,
+    cost_per_million_cache_write: str,
+    cost_per_million_cache_read: str,
+    context_window: str,
+    rotation_threshold_percent: str,
+    effort_levels: str,
+    accepts_images: str,
+    enabled: bool,
+    admin_only: bool,
+) -> Model:
+    """Validate and write every editable column of an existing model; the
+    console's edit form and `app.cli add-model --update` both land here.
+    Values arrive as the form submits them. The name is never changed."""
+    target.provider_id = _provider_required(
+        await _resolve_provider_id(session, provider_id)
+    )
+    target.harnesses = _parse_harnesses(harnesses)
+    target.api_version = _optional_str(api_version, max_len=64)
+    target.label = _optional_str(label, max_len=128)
+    target.description = _optional_str(description, max_len=4000)
+    target.enabled = enabled
+    target.admin_only = admin_only
+    target.context_window = _parse_context_window(context_window)
+    target.rotation_threshold_percent = _parse_rotation_threshold(rotation_threshold_percent)
+    target.effort_levels = _parse_effort_levels(effort_levels)
+    target.accepts_images = _parse_accepts_images(accepts_images)
+    target.cost_per_million_input = _parse_decimal(cost_per_million_input)
+    target.cost_per_million_output = _parse_decimal(cost_per_million_output)
+    target.cost_per_million_cache_write = _parse_decimal(cost_per_million_cache_write)
+    target.cost_per_million_cache_read = _parse_decimal(cost_per_million_cache_read)
+    await session.commit()
+    return target
+
+
 @router.post("/admin/models/{model_id}")
 async def update_model(
     model_id: int,
@@ -390,24 +434,25 @@ async def update_model(
     if target is None:
         raise HTTPException(status_code=404, detail="Model not found")
 
-    target.provider_id = _provider_required(
-        await _resolve_provider_id(session, provider_id)
+    await apply_model_update(
+        session,
+        target,
+        provider_id=provider_id,
+        harnesses=harnesses,
+        api_version=api_version,
+        label=label,
+        description=description,
+        cost_per_million_input=cost_per_million_input,
+        cost_per_million_output=cost_per_million_output,
+        cost_per_million_cache_write=cost_per_million_cache_write,
+        cost_per_million_cache_read=cost_per_million_cache_read,
+        context_window=context_window,
+        rotation_threshold_percent=rotation_threshold_percent,
+        effort_levels=effort_levels,
+        accepts_images=accepts_images,
+        enabled=(enabled == "on"),
+        admin_only=(admin_only == "on"),
     )
-    target.harnesses = _parse_harnesses(harnesses)
-    target.api_version = _optional_str(api_version, max_len=64)
-    target.label = _optional_str(label, max_len=128)
-    target.description = _optional_str(description, max_len=4000)
-    target.enabled = (enabled == "on")
-    target.admin_only = (admin_only == "on")
-    target.context_window = _parse_context_window(context_window)
-    target.rotation_threshold_percent = _parse_rotation_threshold(rotation_threshold_percent)
-    target.effort_levels = _parse_effort_levels(effort_levels)
-    target.accepts_images = _parse_accepts_images(accepts_images)
-    target.cost_per_million_input = _parse_decimal(cost_per_million_input)
-    target.cost_per_million_output = _parse_decimal(cost_per_million_output)
-    target.cost_per_million_cache_write = _parse_decimal(cost_per_million_cache_write)
-    target.cost_per_million_cache_read = _parse_decimal(cost_per_million_cache_read)
-    await session.commit()
     return RedirectResponse("/admin/models", status_code=303)
 
 

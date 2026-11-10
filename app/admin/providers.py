@@ -161,6 +161,37 @@ async def insert_provider(
     return row
 
 
+async def apply_provider_update(
+    session: AsyncSession,
+    target: Provider,
+    *,
+    label: str,
+    base_url: str,
+    messages_path: str,
+    responses_path: str,
+    chat_completions_path: str,
+    credential_id: str,
+    auth_scheme: str,
+    api_version: str,
+    enabled: bool,
+) -> Provider:
+    """Validate and write every editable column of an existing provider; the
+    console's edit form and `app.cli add-provider --update` both land here.
+    Values arrive as the form submits them. The name is never changed."""
+    target.label = _optional(label, max_len=128)
+    target.base_url = _required(base_url, "base_url", max_len=512).rstrip("/")
+    target.credential_id = await _resolve_credential_id(session, credential_id)
+    target.auth_scheme = _auth_scheme(auth_scheme)
+    target.api_version = _optional(api_version, max_len=64)
+    target.enabled = enabled
+    for column, value in _paths(
+        messages_path, responses_path, chat_completions_path
+    ).items():
+        setattr(target, column, value)
+    await session.commit()
+    return target
+
+
 @router.post("/admin/providers")
 async def add_provider(
     request: Request,
@@ -214,17 +245,19 @@ async def update_provider(
     ).scalar_one_or_none()
     if target is None:
         raise HTTPException(status_code=404, detail="Provider not found")
-    target.label = _optional(label, max_len=128)
-    target.base_url = _required(base_url, "base_url", max_len=512).rstrip("/")
-    target.credential_id = await _resolve_credential_id(session, credential_id)
-    target.auth_scheme = _auth_scheme(auth_scheme)
-    target.api_version = _optional(api_version, max_len=64)
-    target.enabled = enabled == "on"
-    for column, value in _paths(
-        messages_path, responses_path, chat_completions_path
-    ).items():
-        setattr(target, column, value)
-    await session.commit()
+    await apply_provider_update(
+        session,
+        target,
+        label=label,
+        base_url=base_url,
+        messages_path=messages_path,
+        responses_path=responses_path,
+        chat_completions_path=chat_completions_path,
+        credential_id=credential_id,
+        auth_scheme=auth_scheme,
+        api_version=api_version,
+        enabled=(enabled == "on"),
+    )
     return RedirectResponse("/admin/providers", status_code=303)
 
 
