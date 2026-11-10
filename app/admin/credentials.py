@@ -156,25 +156,24 @@ async def create_credential(
     return RedirectResponse("/admin/credentials", status_code=303)
 
 
-@router.post("/admin/credentials/{credential_id}")
-async def update_credential(
-    credential_id: int,
-    request: Request,
-    name: str = Form(...),
-    kind: str = Form("static"),
-    secret: str = Form(""),
-    source_path: str = Form(""),
-    session: AsyncSession = Depends(get_session),
-):
-    await require_html_admin(request)
-    target = await _get_credential(session, credential_id)
-
+async def apply_credential_update(
+    session: AsyncSession,
+    target: Credential,
+    *,
+    name: str,
+    kind: str = "static",
+    secret: str = "",
+    source_path: str = "",
+) -> Credential:
+    """Validate and write an existing credential; the console's edit form and
+    `app.cli add-provider --update` both land here. A blank secret or path
+    leaves the stored one alone."""
     cred_name = _required_str(name, "name", max_len=64)
     cred_kind = _validate_kind(kind)
     clash = (
         await session.execute(
             select(Credential).where(
-                Credential.name == cred_name, Credential.id != credential_id
+                Credential.name == cred_name, Credential.id != target.id
             )
         )
     ).scalar_one_or_none()
@@ -216,6 +215,24 @@ async def update_credential(
         target.refreshed_at = None
 
     await session.commit()
+    return target
+
+
+@router.post("/admin/credentials/{credential_id}")
+async def update_credential(
+    credential_id: int,
+    request: Request,
+    name: str = Form(...),
+    kind: str = Form("static"),
+    secret: str = Form(""),
+    source_path: str = Form(""),
+    session: AsyncSession = Depends(get_session),
+):
+    await require_html_admin(request)
+    target = await _get_credential(session, credential_id)
+    await apply_credential_update(
+        session, target, name=name, kind=kind, secret=secret, source_path=source_path
+    )
     return RedirectResponse("/admin/credentials", status_code=303)
 
 

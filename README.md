@@ -87,12 +87,22 @@ console form, and is safe to repeat: a name already taken is reused untouched
 and reported `"created": false`.
 
 ```bash
-python -m app.cli add-provider --name anthropic --kind anthropic --api-key sk-ant-…
+python -m app.cli add-provider --name anthropic --kind anthropic --api-key-env ANTHROPIC_KEY
 python -m app.cli add-provider --name local --kind ollama --base-url http://ollama:11434
 python -m app.cli add-model --provider anthropic --model claude-sonnet-4-5 --context-window 200000
 python -m app.cli mint-key --client my-mind --kind mind    # prints the key once
 python -m app.cli list-models --harness dsh                # what GET /v1/models?harness=dsh answers
+python -m app.cli check-model --model claude-sonnet-4-5    # one small completion; the upstream's status
 ```
+
+The key is read from the environment (`--api-key-env NAME`) or from stdin
+(`--api-key -`) so it never sits in a process list; `--api-key KEY` still
+works. `--update` on `add-provider` or `add-model` rewrites an existing row
+instead of reusing it — the provider's address, scheme and (if given) key; the
+model's provider, context window and any other value given — through the same
+functions as the console's edit forms. `check-model` sends one completion
+through the proxy's own forwarding code and exits 0 on a 200, or 2 with the
+upstream's `status` (401 for a bad key) and its message.
 
 `--kind` is `anthropic`, `openai` or `ollama`; it sets the paths and auth
 scheme, and Anthropic and OpenAI default to their public APIs. `mint-key` on a

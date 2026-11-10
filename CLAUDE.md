@@ -50,6 +50,7 @@ none of the existing routes speak. A model authenticates with its provider's
 credential and auth scheme, never with columns of its own.
 
 `app/cli.py` makes those rows and client keys from the command line. It calls
-the `insert_*` and `issue_key` functions the console's form routes call; a
-create path's validation lives in that function, never in the route or the
-CLI, so the two cannot drift.
+the `insert_*`, `apply_*_update` and `issue_key` functions the console's form
+routes call; a create or update path's validation lives in that function, never
+in the route or the CLI, so the two cannot drift. `check-model` goes through
+`forward_chat_completion`, the chat route's own body after authentication.

@@ -15,6 +15,8 @@ import sys
 import time
 from pathlib import Path
 
+import httpx
+import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import func, select, text
 
@@ -117,3 +119,139 @@ async def test_cli_mints_for_an_existing_client_that_holds_no_live_key(db_maker)
 
     assert result["minted"] and result["key"].startswith("hmp-")
     assert result["created"] is False
+
+
+async def _stored(maker, provider_name: str) -> tuple[Provider, Credential]:
+    async with maker() as s:
+        provider = (
+            await s.execute(select(Provider).where(Provider.name == provider_name))
+        ).scalar_one()
+        credential = (
+            await s.execute(select(Credential).where(Credential.id == provider.credential_id))
+        ).scalar_one()
+    return provider, credential
+
+
+async def test_cli_update_rewrites_an_existing_providers_key_and_address(db_maker):
+    async with db_maker() as s:
+        await cli.add_provider(s, name="anthropic", kind="anthropic",
+                               base_url="https://wrong.example", api_key="sk-wrong")
+    before = await _counts(db_maker)
+
+    async with db_maker() as s:
+        result = await cli.add_provider(s, name="anthropic", kind="anthropic",
+                                        api_key="sk-right", update=True)
+
+    provider, credential = await _stored(db_maker, "anthropic")
+    assert (result["created"], result["updated"]) == (False, True)
+    assert provider.base_url == "https://api.anthropic.com"
+    assert credential.secret == "sk-right"
+    assert await _counts(db_maker) == before
+
+
+async def test_cli_update_given_no_key_keeps_the_stored_one(db_maker):
+    async with db_maker() as s:
+        await cli.add_provider(s, name="anthropic", kind="anthropic", api_key="sk-kept")
+        await cli.add_provider(s, name="anthropic", kind="anthropic",
+                               base_url="https://gateway.example", update=True)
+
+    provider, credential = await _stored(db_maker, "anthropic")
+    assert provider.base_url == "https://gateway.example"
+    assert credential.secret == "sk-kept"
+
+
+async def test_cli_update_moves_a_model_and_rewrites_its_window_keeping_what_was_not_given(
+    db_maker,
+):
+    async with db_maker() as s:
+        await cli.add_provider(s, name="first", kind="openai", api_key="sk-a")
+        await cli.add_provider(s, name="second", kind="openai", api_key="sk-b")
+        await cli.add_model(s, provider="first", model="gpt-test", context_window=1000,
+                            rotation_threshold_percent=45, label="Kept label")
+        result = await cli.add_model(s, provider="second", model="gpt-test",
+                                     context_window=128000, update=True)
+
+    assert (result["created"], result["updated"]) == (False, True)
+    async with db_maker() as s:
+        row = (await s.execute(select(Model))).scalar_one()
+        host = (await s.execute(select(Provider.name).where(Provider.id == row.provider_id))
+                ).scalar_one()
+    assert (host, row.context_window) == ("second", 128000)
+    assert (row.rotation_threshold_percent, row.label) == (45, "Kept label")
+
+
+@pytest.mark.parametrize("key_args, env_extra, stdin", [
+    (("--api-key-env", "PROVIDER_KEY"), {"PROVIDER_KEY": "sk-from-env"}, None),
+    (("--api-key", "-"), {}, "sk-from-stdin\n"),
+], ids=["env", "stdin"])
+async def test_cli_takes_the_provider_key_from_outside_argv(
+    db_maker, scratch_database, key_args, env_extra, stdin
+):
+    schema = await _schema_of(db_maker)
+    env = {**os.environ, **env_extra, "DATABASE_URL": scratch_database,
+           "DB_SCHEMA": schema, "PYTHONPATH": str(REPO)}
+    done = subprocess.run(
+        [sys.executable, "-m", "app.cli", "add-provider", "--name", "openai",
+         "--kind", "openai", *key_args],
+        cwd=REPO, env=env, input=stdin or "", capture_output=True, text=True, timeout=60,
+    )
+    assert done.returncode == 0, done.stdout + done.stderr
+
+    _, credential = await _stored(db_maker, "openai")
+    expected = (env_extra.get("PROVIDER_KEY") or stdin).strip()
+    assert credential.secret == expected
+
+
+def _upstream(monkeypatch, status: int, body: dict) -> list[httpx.Request]:
+    """The proxy's upstream client, answering every request with `body`."""
+    import app.azure
+
+    sent: list[httpx.Request] = []
+
+    def answer(request: httpx.Request) -> httpx.Response:
+        sent.append(request)
+        return httpx.Response(status, json=body)
+
+    monkeypatch.setattr(
+        app.azure, "_shared_client", httpx.AsyncClient(transport=httpx.MockTransport(answer)))
+    return sent
+
+
+async def test_check_model_reports_the_upstreams_refusal_and_exits_2(
+    db_maker, monkeypatch, capsys
+):
+    async with db_maker() as s:
+        await cli.add_provider(s, name="anthropic", kind="anthropic", api_key="sk-bad")
+        await cli.add_model(s, provider="anthropic", model="claude-test-1",
+                            context_window=200000)
+    sent = _upstream(monkeypatch, 401, {
+        "type": "error",
+        "error": {"type": "authentication_error", "message": "invalid x-api-key"},
+    })
+
+    code = await cli.run(["check-model", "--model", "claude-test-1"])
+
+    printed = json.loads(capsys.readouterr().out)
+    assert code == 2
+    assert printed["status"] == 401
+    assert "invalid x-api-key" in printed["error"]
+    assert [str(r.url) for r in sent] == ["https://api.anthropic.com/v1/messages"]
+    assert sent[0].headers["x-api-key"] == "sk-bad"
+
+
+async def test_check_model_reports_a_completed_turn_and_exits_0(db_maker, monkeypatch, capsys):
+    async with db_maker() as s:
+        await cli.add_provider(s, name="openai", kind="openai", api_key="sk-good")
+        await cli.add_model(s, provider="openai", model="gpt-test", context_window=128000)
+    sent = _upstream(monkeypatch, 200, {
+        "id": "c1", "object": "chat.completion", "model": "gpt-test",
+        "choices": [{"index": 0, "finish_reason": "stop",
+                     "message": {"role": "assistant", "content": "ok"}}],
+    })
+
+    code = await cli.run(["check-model", "--model", "gpt-test"])
+
+    printed = json.loads(capsys.readouterr().out)
+    assert code == 0
+    assert (printed["ok"], printed["status"], printed["reply"]) == (True, 200, "ok")
+    assert [str(r.url) for r in sent] == ["https://api.openai.com/v1/chat/completions"]
