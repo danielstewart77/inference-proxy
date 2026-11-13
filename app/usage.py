@@ -45,10 +45,25 @@ def tokens_from_usage(azure_usage: dict) -> dict:
             or {}
         )
         cache_read = details.get("cached_tokens")
+    input_tokens = azure_usage.get("input_tokens")
+    output_tokens = azure_usage.get("output_tokens")
+    total_tokens = azure_usage.get("total_tokens")
+    if total_tokens is None and input_tokens is not None:
+        # Only when the provider omitted it. Every route that reports usage at
+        # all already sends a total -- measured over 36 hours of live rows,
+        # not one row had an input count and no total -- except `/v1/systemone`,
+        # whose upstream sends `{input_tokens, output_tokens}` and no total
+        # because a choice question emits no output tokens at all. Without this
+        # the decision wire is the one route whose totals cannot be read
+        # without reconstructing them at every call site.
+        #
+        # It follows the provider's own convention for `input_tokens`, which
+        # differs between them -- see the column comment on `UsageLog`.
+        total_tokens = input_tokens + (output_tokens or 0)
     return {
-        "input_tokens": azure_usage.get("input_tokens"),
-        "output_tokens": azure_usage.get("output_tokens"),
-        "total_tokens": azure_usage.get("total_tokens"),
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+        "total_tokens": total_tokens,
         "cache_creation_input_tokens": azure_usage.get("cache_creation_input_tokens"),
         "cache_read_input_tokens": cache_read,
     }
