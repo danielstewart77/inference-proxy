@@ -160,3 +160,29 @@ async def test_cost_expr_treats_null_cache_rates_as_zero(session):
         )
     ).scalar_one()
     assert float(cost) == 3.0
+
+
+def test_a_total_is_derived_only_when_the_provider_omitted_it():
+    """The decision wire reports input and output and no total, so nothing could
+    read a systemone total without rebuilding it at every call site.
+
+    Measured over 36 hours of live rows before the change: not one row had an
+    input count and no total, so this fires on the decision wire alone.
+    """
+    from app.usage import tokens_from_usage
+
+    decision_wire = tokens_from_usage({"input_tokens": 874, "output_tokens": 0})
+    assert decision_wire["total_tokens"] == 874 + 0
+
+    # A provider that sent its own total keeps it, even one that disagrees with
+    # the sum -- OpenAI counts cached reads inside input and Anthropic does not,
+    # so the provider's arithmetic is the one that matches its invoice.
+    reported = tokens_from_usage(
+        {"input_tokens": 100, "output_tokens": 20, "total_tokens": 7}
+    )
+    assert reported["total_tokens"] == 7
+
+    # And a failed call has no input, so there is nothing to total from.
+    refused = tokens_from_usage({})
+    assert refused["total_tokens"] is None
+    assert refused["input_tokens"] is None

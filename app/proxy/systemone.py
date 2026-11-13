@@ -94,18 +94,40 @@ async def systemone(
             status_code=502, detail=f"decision model unreachable: {exc}"
         ) from exc
 
-    usage.schedule(
-        principal, request=request, model=target.name, endpoint=ENDPOINT_LABEL,
-        status_code=response.status_code, started_at=started_at,
-    )
     # The upstream's own status and body, unaltered. A refusal reported as
     # something else is a remedy applied to the wrong machine.
+    #
+    # Read BEFORE the row is scheduled, because the tokens are in the body.
+    # This route used to meter on the way past -- status, duration and the
+    # caller, with `azure_usage` left at its default -- so every systemone
+    # call stored NULL token counts. Measured 2026-11-13: all 4,370 of Hex's
+    # decision calls in 36 hours, every one of them, which is why a real
+    # 95-million-token spend read as untracked rather than as large.
     try:
         payload = response.json()
     except ValueError:
+        usage.schedule(
+            principal, request=request, model=target.name, endpoint=ENDPOINT_LABEL,
+            status_code=502, error_type="non_json_body", started_at=started_at,
+        )
         return JSONResponse(
             status_code=502,
             content={"error": {"message": "decision model returned a non-JSON body",
                                "type": "api_error"}},
         )
+
+    reported = payload.get("usage") if isinstance(payload, dict) else None
+    usage.schedule(
+        principal, request=request, model=target.name, endpoint=ENDPOINT_LABEL,
+        status_code=response.status_code, started_at=started_at,
+        azure_usage=reported if isinstance(reported, dict) else None,
+        # A row with no tokens says which of the two happened: the provider
+        # reported none, or the call never got far enough to have any. A bare
+        # NULL cannot be told from a gap in the metering itself.
+        error_type=(
+            None
+            if isinstance(reported, dict) and reported
+            else "usage_not_reported"
+        ),
+    )
     return JSONResponse(status_code=response.status_code, content=payload)

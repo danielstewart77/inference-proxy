@@ -247,3 +247,82 @@ def test_a_reserved_model_is_invisible_to_an_ordinary_key(client, monkeypatch):
 
     assert response.status_code == 404
     assert seen == {}
+
+
+# --- metering --------------------------------------------------------------
+
+
+def _metered(monkeypatch):
+    """Every usage row this route schedules, as the kwargs it scheduled them with."""
+    rows: list[dict] = []
+    import app.proxy.systemone as route
+
+    real = route.usage.schedule
+
+    def capture(principal, **kwargs):
+        rows.append(kwargs)
+        # Not called: the real one spawns an insert task against a database
+        # this test does not own. The row's contents are the behaviour.
+        assert real is not None
+    monkeypatch.setattr(route.usage, "schedule", capture)
+    return rows
+
+
+def test_a_decision_call_records_the_tokens_the_upstream_reported(client, monkeypatch):
+    """The tokens are in the body, so the row cannot be written on the way past.
+
+    Measured 2026-11-13: all 4,370 of Hex's decision calls over 36 hours stored
+    NULL token counts, because this route metered status and duration before it
+    ever read the response. A real 95-million-token spend read as untracked.
+    """
+    _captures(monkeypatch)
+    rows = _metered(monkeypatch)
+
+    response = client.post(
+        "/v1/systemone", headers={"Authorization": "Bearer k"}, json=_call()
+    )
+
+    assert response.status_code == 200
+    assert len(rows) == 1
+    assert rows[0]["azure_usage"] == {"input_tokens": 874, "output_tokens": 0}
+    assert rows[0]["endpoint"] == "systemone"
+    assert rows[0]["status_code"] == 200
+
+
+def test_a_decision_call_the_upstream_reported_no_usage_for_says_so(client, monkeypatch):
+    """A row with no tokens names why, so it is not read as a metering gap."""
+    _captures(monkeypatch, payload={"model": DECIDER, "answers": {}})
+    rows = _metered(monkeypatch)
+
+    response = client.post(
+        "/v1/systemone", headers={"Authorization": "Bearer k"}, json=_call()
+    )
+
+    assert response.status_code == 200
+    assert len(rows) == 1
+    assert rows[0]["azure_usage"] is None
+    assert rows[0]["error_type"] == "usage_not_reported"
+
+
+def test_a_body_that_is_not_json_is_still_metered_against_its_caller(
+    client, monkeypatch
+):
+    """The call was made and the model was loaded; somebody spent that."""
+    def fake_post(self, url, headers=None, json=None):
+        raise AssertionError("replaced below")
+
+    async def non_json(self, url, headers=None, json=None):
+        return httpx.Response(
+            200, content=b"not json at all", request=httpx.Request("POST", url)
+        )
+
+    monkeypatch.setattr(httpx.AsyncClient, "post", non_json)
+    rows = _metered(monkeypatch)
+
+    response = client.post(
+        "/v1/systemone", headers={"Authorization": "Bearer k"}, json=_call()
+    )
+
+    assert response.status_code == 502
+    assert len(rows) == 1
+    assert rows[0]["error_type"] == "non_json_body"
