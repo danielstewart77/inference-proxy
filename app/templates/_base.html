@@ -11,7 +11,12 @@
   <script src="https://unpkg.com/htmx.org@1.9.12" defer></script>
   <style>
     :root {
-      --bg: #dce8f0;
+      /* The page is the colour of its menus. It used to be #dce8f0 with a
+         dotted-and-hatched overlay, under a --fg of #e7e7de -- near-white text
+         on a near-white ground, which made every panel's surrounding text
+         unreadable and the pattern made it worse. One flat surface, the nav's
+         own colour, so the panels are the only thing that stands off it. */
+      --bg: #162030;
       --nav: #162030;
       --panel: rgba(10, 14, 25, 0.94);
       --panel-soft: rgba(22, 32, 48, 0.94);
@@ -31,10 +36,6 @@
       min-height: 100vh;
       font: 13px/1.6 'Fira Code', 'Consolas', 'Courier New', monospace;
       background-color: var(--bg);
-      background-image:
-        radial-gradient(circle at 1px 1px, rgba(154, 184, 204, 0.72) 1.2px, transparent 1.3px),
-        linear-gradient(30deg, transparent 24%, rgba(184, 207, 224, 0.48) 25%, rgba(184, 207, 224, 0.48) 26%, transparent 27%, transparent 74%, rgba(184, 207, 224, 0.48) 75%, rgba(184, 207, 224, 0.48) 76%, transparent 77%);
-      background-size: 28px 28px, 56px 96px;
       color: var(--fg);
     }
     a { color: var(--accent); text-decoration: none; }
@@ -182,7 +183,7 @@
       padding: 8px 14px;
       color: var(--fg);
     }
-    .dropmenu a:hover { background: var(--bg); text-decoration: none; }
+    .dropmenu a:hover { background: var(--panel-soft); text-decoration: none; }
     .dropdown:hover .dropmenu,
     .dropdown:focus-within .dropmenu { display: block; }
     /* Two-column form rows for paired fields like name+label or input+output cost. */
