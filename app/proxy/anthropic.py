@@ -138,6 +138,93 @@ def apply_oauth_system_prompt(body: dict) -> dict:
     return body
 
 
+CACHE_MARKER = {"type": "ephemeral"}
+# Block types Anthropic refuses a `cache_control` marker on.
+_UNMARKABLE_BLOCKS = frozenset({"thinking", "redacted_thinking"})
+
+
+def _has_cache_control(node: object) -> bool:
+    if isinstance(node, dict):
+        if "cache_control" in node:
+            return True
+        return any(_has_cache_control(v) for v in node.values())
+    if isinstance(node, list):
+        return any(_has_cache_control(v) for v in node)
+    return False
+
+
+def _mark_last_block(blocks: list) -> bool:
+    """Put the marker on the last block of `blocks` that can carry one."""
+    for block in reversed(blocks):
+        if not isinstance(block, dict):
+            continue
+        if block.get("type") in _UNMARKABLE_BLOCKS:
+            continue
+        if block.get("type") == "text" and not (block.get("text") or "").strip():
+            continue
+        block["cache_control"] = dict(CACHE_MARKER)
+        return True
+    return False
+
+
+def apply_cache_breakpoints(body: dict) -> dict:
+    """Mark the stable front of a Messages body for prompt caching.
+
+    Without a `cache_control` marker Anthropic bills the whole prompt as fresh
+    input on every call, and a client that resends a growing conversation pays
+    for all of it each turn. A client that already places its own markers
+    (Claude Code does) knows its prompt better than the proxy and is left
+    alone. Otherwise two breakpoints go on:
+
+    - the end of the fixed preamble — the last `system` block, which covers
+      `tools` too since they render first; the last tool when there is no
+      system prompt;
+    - the end of the conversation so far, so the next call reads back
+      everything this one sent. A single-message request with a preamble is
+      a one-off question, and marking its tail would only pay the write
+      premium on bytes nobody reads again, so it gets the preamble marker
+      alone.
+
+    Explicit block markers rather than the top-level automatic field: every
+    Anthropic Messages upstream accepts them.
+    """
+    if _has_cache_control(body):
+        return body
+
+    preamble_marked = False
+    system = body.get("system")
+    if isinstance(system, str) and system.strip():
+        body["system"] = [
+            {"type": "text", "text": system, "cache_control": dict(CACHE_MARKER)}
+        ]
+        preamble_marked = True
+    elif isinstance(system, list):
+        preamble_marked = _mark_last_block(system)
+    tools = body.get("tools")
+    if not preamble_marked and isinstance(tools, list):
+        preamble_marked = _mark_last_block(tools)
+
+    messages = body.get("messages")
+    if not isinstance(messages, list) or not messages:
+        return body
+    if preamble_marked and len(messages) < 2:
+        return body
+    for message in reversed(messages):
+        if not isinstance(message, dict) or message.get("role") == "system":
+            continue
+        content = message.get("content")
+        if isinstance(content, str):
+            if not content.strip():
+                continue
+            message["content"] = [
+                {"type": "text", "text": content, "cache_control": dict(CACHE_MARKER)}
+            ]
+            break
+        if isinstance(content, list) and _mark_last_block(content):
+            break
+    return body
+
+
 def _usage_from_anthropic(payload: dict) -> dict:
     """Normalize Anthropic's usage block into the shape `usage.schedule` expects."""
     u = payload.get("usage") or {}
@@ -292,6 +379,7 @@ async def anthropic_messages(
     body = _strip_unsupported_foundry_fields(body)
     if target.is_anthropic_oauth:
         body = apply_oauth_system_prompt(dict(body))
+    body = apply_cache_breakpoints(body)
 
     is_streaming = bool(body.get("stream", False))
 

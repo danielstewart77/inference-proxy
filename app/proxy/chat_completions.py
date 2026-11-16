@@ -38,7 +38,11 @@ from app.deployments import (
     reject_wrong_protocol,
     resolve_deployment,
 )
-from app.proxy.anthropic import anthropic_upstream_headers, apply_oauth_system_prompt
+from app.proxy.anthropic import (
+    anthropic_upstream_headers,
+    apply_cache_breakpoints,
+    apply_oauth_system_prompt,
+)
 from app.proxy.chat_to_anthropic import (
     CONTEXT_OVERFLOW_STOP,
     UntranslatableRequest,
@@ -641,6 +645,7 @@ async def forward_chat_completion(
             )
             if target.is_anthropic_oauth:
                 anthropic_body = apply_oauth_system_prompt(anthropic_body)
+            anthropic_body = apply_cache_breakpoints(anthropic_body)
             anthropic_headers = anthropic_upstream_headers(target)
             if is_streaming:
                 return await _stream_via_anthropic_translation(
