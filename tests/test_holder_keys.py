@@ -105,3 +105,41 @@ def test_revoking_a_holder_stops_its_key_and_no_other(proxy):
     assert validate_api_key(f"Bearer {proxy.keys['skippy']}", None)
     listed = {r["holder"]: r for r in proxy.get("/credentials", headers=_as(proxy.keys["console"])).json()}
     assert listed["stash"]["live"] is False and listed["skippy"]["live"] is True
+
+
+def test_a_rotation_that_failed_can_put_the_previous_key_back(proxy):
+    """The console re-sends the value it replaced when it could not write the
+    new one; refusing it would leave the mind with no working key."""
+    value = secrets.token_urlsafe(32)
+    proxy.put("/credentials/stash", headers=_as(proxy.keys["console"]),
+              json={"token": value, "role": "mind"})
+
+    back = proxy.put("/credentials/stash", headers=_as(proxy.keys["console"]),
+                     json={"token": proxy.keys["stash_old"], "role": "mind"})
+
+    assert back.status_code == 200, back.text
+    assert validate_api_key(f"Bearer {proxy.keys['stash_old']}", None)
+    assert not validate_api_key(f"Bearer {value}", None)
+
+
+def test_a_new_mind_cannot_take_over_the_admin_or_a_privileged_client(proxy):
+    """A mind created under the name of the minting client or of a privileged
+    one would otherwise revoke its key and inherit its client."""
+    for holder in ("hive-console", "skippy"):
+        response = proxy.put(f"/credentials/{holder}", headers=_as(proxy.keys["console"]),
+                             json={"token": secrets.token_urlsafe(32), "role": "mind"})
+        assert response.status_code == 409, holder
+    assert proxy.delete("/credentials/hive-console", headers=_as(proxy.keys["console"])).status_code == 409
+    assert validate_api_key(f"Bearer {proxy.keys['console']}", None)
+    assert validate_api_key(f"Bearer {proxy.keys['skippy']}", None)
+
+
+def test_an_unknown_route_never_logs_the_key_it_was_sent(proxy, capsys):
+    """A console minting into a proxy that predates the route used to write
+    its key, and the new mind's, into the journal."""
+    proxy.put("/no-such-route", headers=_as(proxy.keys["console"]),
+              json={"token": "the-new-minds-key-value-0123456789"})
+
+    logged = capsys.readouterr().out
+    assert proxy.keys["console"] not in logged
+    assert "the-new-minds-key-value" not in logged

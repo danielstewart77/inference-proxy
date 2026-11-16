@@ -26,6 +26,7 @@ from typing import Any, Optional
 from fastapi import APIRouter, Depends, Header, HTTPException
 from pydantic import BaseModel
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth import client_id_for_key, _hash_key, refresh_key_cache
@@ -72,10 +73,13 @@ def _holder(raw: str) -> str:
     return holder
 
 
-async def _client_for(session: AsyncSession, holder: str) -> Optional[Client]:
-    rows = (
-        await session.execute(select(Client).where(func.lower(Client.name) == holder))
-    ).scalars().all()
+async def _client_for(session: AsyncSession, holder: str, *, lock: bool = False) -> Optional[Client]:
+    query = select(Client).where(func.lower(Client.name) == holder)
+    if lock:
+        # Two writes for one holder in turn, never interleaved: both would
+        # read the same live keys and each leave its own live.
+        query = query.with_for_update()
+    rows = (await session.execute(query)).scalars().all()
     if len(rows) > 1:
         raise HTTPException(
             status_code=409,
@@ -110,39 +114,94 @@ async def put_holder_key(
     if role not in KIND_BY_ROLE:
         raise HTTPException(status_code=400, detail=f"role must be one of {sorted(KIND_BY_ROLE)}")
     token = body.token or ""
-    if len(token) < MIN_TOKEN_LENGTH or token != token.strip():
+    if len(token) < MIN_TOKEN_LENGTH or any(ch.isspace() or not ch.isprintable() for ch in token):
         raise HTTPException(
-            status_code=400, detail=f"a key is at least {MIN_TOKEN_LENGTH} characters, no spaces"
+            status_code=400,
+            detail=f"a key is at least {MIN_TOKEN_LENGTH} printable characters, no spaces",
         )
     digest = _hash_key(token)
-    taken = (
-        await session.execute(select(ApiKey.client_id).where(ApiKey.key_hash == digest))
-    ).first()
-    if taken is not None:
-        raise HTTPException(status_code=409, detail="that value is already a key")
+    kind = KIND_BY_ROLE[role]
 
-    client = await _client_for(session, name)
+    client = await _client_for(session, name, lock=True)
     created = client is None
     if created:
-        client = Client(name=name, kind=KIND_BY_ROLE[role], disabled=False, privileged=False)
+        client = Client(name=name, kind=kind, disabled=False, privileged=False)
         session.add(client)
-        await session.flush()
-    elif client.disabled:
-        raise HTTPException(status_code=409, detail=f"client {client.name!r} is disabled")
+        try:
+            await session.flush()
+        except IntegrityError:
+            await session.rollback()
+            raise HTTPException(
+                status_code=409, detail=f"{name!r} was created by another request; try again"
+            )
+    else:
+        _refuse_to_take_over(client, kind)
+
+    same = None
+    owner = (
+        await session.execute(select(ApiKey).where(ApiKey.key_hash == digest))
+    ).scalar_one_or_none()
+    if owner is not None:
+        if owner.client_id != client.id:
+            raise HTTPException(status_code=409, detail="that value is already another holder's key")
+        # The console putting back the value it just replaced, after the
+        # write of the new one failed: that key is reinstated, not refused.
+        same = owner
 
     live = (
         await session.execute(
             select(ApiKey).where(ApiKey.client_id == client.id, ApiKey.revoked.is_(False))
         )
     ).scalars().all()
+    replaced = 0
     for key in live:
-        key.revoked = True
-    session.add(ApiKey(client_id=client.id, label="console", key_hash=digest, revoked=False))
+        if key is not same:
+            key.revoked = True
+            replaced += 1
+    if same is not None:
+        same.revoked = False
+    else:
+        session.add(ApiKey(client_id=client.id, label="console", key_hash=digest, revoked=False))
     await session.commit()
-    # Now, not on the next refresh tick: the console probes the value the
-    # moment it is written, and a mind may start a turn seconds later.
-    await refresh_key_cache(session)
-    return {"holder": name, "client": client.name, "created": created, "replaced": len(live)}
+    await _refresh_after_commit(session)
+    return {"holder": name, "client": client.name, "created": created, "replaced": replaced}
+
+
+def _refuse_to_take_over(client: Client, kind: str) -> None:
+    """A holder's PUT reaches only a client that is already that holder.
+
+    Without this a mind created under the name of an app (`frame-main`) or
+    of the console itself would revoke that app's key and inherit its
+    client, its usage and, for a privileged one, its admin-only models.
+    """
+    if client.disabled:
+        raise HTTPException(status_code=409, detail=f"client {client.name!r} is disabled")
+    if client.name.strip().lower() in config.credential_admin_clients:
+        raise HTTPException(
+            status_code=409, detail=f"{client.name!r} manages keys and is not managed here"
+        )
+    if client.privileged:
+        raise HTTPException(
+            status_code=409,
+            detail=f"{client.name!r} is privileged; its key is changed on the proxy's own page",
+        )
+    if client.kind != kind:
+        raise HTTPException(
+            status_code=409,
+            detail=f"{client.name!r} is a {client.kind} client, not a {kind}",
+        )
+
+
+async def _refresh_after_commit(session: AsyncSession) -> None:
+    """Load the change into the key cache now rather than on the next tick:
+    the console probes a value the moment it is written. A refresh that
+    fails is not a failed change - the commit stands and the refresh loop
+    picks it up within seconds - so it must not answer as a refusal, which
+    the console reads as "nothing changed" and does not write the file."""
+    try:
+        await refresh_key_cache(session)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[holder_keys] key cache refresh after commit failed: {type(exc).__name__}", flush=True)
 
 
 @router.delete("/credentials/{holder}")
@@ -155,8 +214,14 @@ async def delete_holder_key(
     history stay."""
     del caller
     name = _holder(holder)
-    client = await _client_for(session, name)
+    client = await _client_for(session, name, lock=True)
     revoked = 0
+    if client is not None and client.name.strip().lower() in config.credential_admin_clients:
+        # The key every one of these routes is called with: revoking it
+        # locks the console out of the proxy until someone edits it by hand.
+        raise HTTPException(
+            status_code=409, detail=f"{client.name!r} manages keys and is not revoked here"
+        )
     if client is not None:
         live = (
             await session.execute(
@@ -167,7 +232,7 @@ async def delete_holder_key(
             key.revoked = True
         revoked = len(live)
         await session.commit()
-        await refresh_key_cache(session)
+        await _refresh_after_commit(session)
     return {"holder": name, "revoked": bool(revoked)}
 
 
