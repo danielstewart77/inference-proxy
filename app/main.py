@@ -17,6 +17,7 @@ from starlette.middleware.sessions import SessionMiddleware
 
 from app.admin import clients as admin_clients
 from app.admin import credentials as admin_credentials
+from app import holder_keys
 from app.admin import login as admin_login
 from app.admin import models as admin_models
 from app.admin import providers as admin_providers
@@ -221,6 +222,7 @@ def create_app() -> FastAPI:
     app.include_router(admin_login.router)
     app.include_router(admin_clients.router)
     app.include_router(admin_credentials.router)
+    app.include_router(holder_keys.router)
     app.include_router(admin_models.router)
     app.include_router(admin_providers.router)
     app.include_router(admin_usage.router)

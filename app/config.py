@@ -64,6 +64,16 @@ class Config:
     key_cache_refresh_seconds: float = float(
         os.getenv("KEY_CACHE_REFRESH_SECONDS", "5"))
 
+    # The clients whose key may mint, rotate and revoke other holders' keys
+    # over `/credentials` -- the hive console, which gives each mind it
+    # creates a key of its own. Client names, comma separated, matched
+    # without case. Empty, nobody may: the routes refuse every caller.
+    credential_admin_clients: frozenset = frozenset(
+        name.strip().lower()
+        for name in os.getenv("CREDENTIAL_ADMIN_CLIENTS", "").split(",")
+        if name.strip()
+    )
+
     # Usage log retention
     usage_prune_interval_seconds: int = int(os.getenv("USAGE_PRUNE_INTERVAL_SECONDS", "86400"))
     usage_prune_days: int = int(os.getenv("USAGE_PRUNE_DAYS", "90"))

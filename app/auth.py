@@ -141,6 +141,15 @@ def resolve_principal(
     return (entry[0], entry[1]) if entry else None
 
 
+def client_id_for_key(
+    authorization: str | None = None,
+    api_key_header: str | None = None,
+) -> Optional[int]:
+    """The client id an issued key belongs to, or None."""
+    principal = resolve_principal(authorization, api_key_header)
+    return principal[0] if principal else None
+
+
 def resolve_requester_role(
     authorization: str | None = None,
     api_key_header: str | None = None,
