@@ -17,6 +17,7 @@ from starlette.middleware.sessions import SessionMiddleware
 
 from app.admin import clients as admin_clients
 from app.admin import credentials as admin_credentials
+from app import holder_keys
 from app.admin import login as admin_login
 from app.admin import models as admin_models
 from app.admin import providers as admin_providers
@@ -42,6 +43,18 @@ from app.utils import ConnectionLoggerMiddleware, log
 
 # Site favicon, loaded once at import. Served at /favicon.svg and /favicon.ico.
 _FAVICON_SVG = (Path(__file__).resolve().parent / "static" / "favicon.svg").read_bytes()
+
+
+#: Headers that carry a credential, never written to a log.
+_SECRET_HEADERS = frozenset({"authorization", "api-key", "x-api-key", "cookie", "proxy-authorization"})
+
+
+def redacted_headers(headers) -> dict:
+    """A request's headers as they may be logged: every credential replaced."""
+    return {
+        name: ("<redacted>" if name.lower() in _SECRET_HEADERS else value)
+        for name, value in dict(headers).items()
+    }
 
 
 def create_app() -> FastAPI:
@@ -221,6 +234,7 @@ def create_app() -> FastAPI:
     app.include_router(admin_login.router)
     app.include_router(admin_clients.router)
     app.include_router(admin_credentials.router)
+    app.include_router(holder_keys.router)
     app.include_router(admin_models.router)
     app.include_router(admin_providers.router)
     app.include_router(admin_usage.router)
@@ -247,15 +261,12 @@ def create_app() -> FastAPI:
         methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
     )
     async def catch_all(request: Request, path: str):
+        # Never a credential or a body: an unknown route is reached by
+        # clients that send their key on every request, and by a console
+        # minting a key into a proxy that predates the route. Both used to
+        # land in the journal in plain text.
         print(f"\n[CATCH-ALL] {request.method} /{path}")
-        print(f"  Query: {request.url.query}")
-        print(f"  Headers: {dict(request.headers)}")
-        try:
-            body = await request.body()
-            if body:
-                print(f"  Body (first 500 chars): {body[:500].decode('utf-8', errors='replace')}")
-        except Exception:
-            pass
+        print(f"  Headers: {redacted_headers(request.headers)}")
         return JSONResponse(
             status_code=404,
             content={"error": f"Unknown route: {request.method} /{path}"},
