@@ -143,3 +143,37 @@ def test_an_unknown_route_never_logs_the_key_it_was_sent(proxy, capsys):
     logged = capsys.readouterr().out
     assert proxy.keys["console"] not in logged
     assert "the-new-minds-key-value" not in logged
+
+
+def test_usage_is_answered_per_holder_with_a_quiet_one_at_zero(proxy, db_maker):
+    """Story 2.1.17: the console totals usage per person from this, so each
+    mind's own calls have to come back under that mind."""
+    import asyncio
+
+    from sqlalchemy import select as _select
+
+    from app.usage import store_usage_row
+
+    async def seed():
+        async with db_maker() as s:
+            stash = (await s.execute(_select(Client).where(Client.name == "Stash"))).scalar_one()
+            for tokens in (100, 250):
+                await store_usage_row(
+                    s, client_id=stash.id, key_id=None, model_name="m", endpoint="/v1/messages",
+                    status_code=200, error_type=None, duration_ms=5, client_ip_str="127.0.0.1",
+                    input_tokens=tokens, output_tokens=0, total_tokens=tokens,
+                    cache_creation_input_tokens=0, cache_read_input_tokens=0)
+            await s.commit()
+
+    asyncio.run(seed())
+
+    rows = {r["holder"]: r for r in proxy.get(
+        "/credentials/usage", headers=_as(proxy.keys["console"])).json()}
+
+    assert (rows["stash"]["requests"], rows["stash"]["total_tokens"]) == (2, 350)
+    assert (rows["skippy"]["requests"], rows["skippy"]["total_tokens"]) == (0, 0)
+    assert rows["stash"]["role"] == "mind"
+
+
+def test_a_minds_own_key_cannot_read_everyones_usage(proxy):
+    assert proxy.get("/credentials/usage", headers=_as(proxy.keys["skippy"])).status_code == 403

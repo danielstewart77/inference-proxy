@@ -23,7 +23,7 @@ from __future__ import annotations
 import re
 from typing import Any, Optional
 
-from fastapi import APIRouter, Depends, Header, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
@@ -265,6 +265,57 @@ async def list_holder_keys(
                 "created_at": client.created_at.isoformat() if client.created_at else None,
                 "revoked_at": None if live else "revoked",
                 "live": live,
+            }
+        )
+    return rows
+
+
+@router.get("/credentials/usage")
+async def holder_usage(
+    days: int = Query(30, ge=1, le=365),
+    caller: str = Depends(require_credential_admin),
+    session: AsyncSession = Depends(get_session),
+) -> list[dict[str, Any]]:
+    """What each holder used over the last `days` days: requests, tokens and
+    estimated cost, priced as `/admin/usage` prices them.
+
+    The console totals these per person - each holder is a mind, a bot or a
+    service, and the hive knows whose mind is whose (story 2.1.17) - so this
+    answers per holder and knows nothing of people. Every client is listed,
+    a quiet one at zero, so a mind that used nothing is not mistaken for one
+    the proxy has never heard of.
+    """
+    del caller
+    from app.admin.usage import _cost_expr, _since, _sum_tokens
+    from app.orm import Model, UsageLog
+
+    used = {
+        row.client_id: row
+        for row in (
+            await session.execute(
+                select(
+                    UsageLog.client_id.label("client_id"),
+                    func.count(UsageLog.id).label("requests"),
+                    _sum_tokens(UsageLog.total_tokens).label("total_tokens"),
+                    _cost_expr().label("cost"),
+                )
+                .outerjoin(Model, UsageLog.model_name == Model.deployment_name)
+                .where(UsageLog.created_at >= _since(days))
+                .group_by(UsageLog.client_id)
+            )
+        ).all()
+    }
+    clients = (await session.execute(select(Client).order_by(Client.name))).scalars().all()
+    rows = []
+    for client in clients:
+        row = used.get(client.id)
+        rows.append(
+            {
+                "holder": client.name.strip().lower(),
+                "role": ROLE_BY_KIND.get(client.kind, "service"),
+                "requests": int(row.requests) if row else 0,
+                "total_tokens": int(row.total_tokens) if row else 0,
+                "cost": round(float(row.cost or 0), 4) if row else 0.0,
             }
         )
     return rows
