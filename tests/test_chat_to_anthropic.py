@@ -120,11 +120,17 @@ def test_the_chat_route_accepts_an_anthropic_messages_deployment():
 # ---------- Requirement 2, 3, 4, 6: request translation ----------
 
 
-def _translate(**body) -> dict:
+def _translate(_model: str = "claude-haiku-4-5", **body) -> dict:
+    # A model that thinks on a budget, which is what the budget tests below
+    # are about; the current models are driven by `_translate_current`.
     body.setdefault("messages", [{"role": "user", "content": "hi"}])
     return transform_to_anthropic_messages(
-        body, streaming=False, model="claude-opus-5"
+        body, streaming=False, model=_model
     )
+
+
+def _translate_current(**body) -> dict:
+    return _translate("claude-sonnet-5-5", **body)
 
 
 def test_an_offered_tool_arrives_with_its_schema_under_input_schema():
@@ -428,6 +434,42 @@ def test_a_reasoning_effort_becomes_a_thinking_budget(effort, budget):
     # with no ceiling named it rises to leave room for a reply behind the
     # thinking rather than a reply of nothing.
     assert out["max_tokens"] - budget >= 4096
+
+
+@pytest.mark.parametrize(
+    "effort,level",
+    [
+        ("minimal", "low"),
+        ("low", "low"),
+        ("medium", "medium"),
+        ("high", "high"),
+        ("xhigh", "xhigh"),
+        ("max", "max"),
+    ],
+)
+def test_a_reasoning_effort_reaches_a_current_model_as_an_effort_level(effort, level):
+    """A current Claude model refuses a thinking budget with a 400 and is
+    steered by an effort level. 2026-11-24: with none sent, a reviewer spent
+    550,000 hidden reasoning tokens in seventy-five minutes."""
+    out = _translate_current(reasoning_effort=effort, temperature=0.2)
+
+    assert out["output_config"] == {"effort": level}
+    assert out["thinking"] == {"type": "adaptive"}
+    assert "temperature" not in out
+
+
+def test_a_current_model_asked_for_no_effort_is_sent_none():
+    out = _translate_current(temperature=0.2)
+
+    assert "output_config" not in out and "thinking" not in out
+    assert out["temperature"] == 0.2
+    assert "output_config" not in _translate_current(reasoning_effort="off")
+
+
+def test_the_nested_reasoning_form_reaches_a_current_model_too():
+    out = _translate_current(reasoning={"effort": "medium"})
+
+    assert out["output_config"] == {"effort": "medium"}
 
 
 def test_a_named_ceiling_is_not_raised_to_fit_a_thinking_budget():
