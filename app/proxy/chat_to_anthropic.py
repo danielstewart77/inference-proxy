@@ -59,6 +59,37 @@ THINKING_BUDGETS = {
     "xhigh": 32768,
 }
 
+#: Claude models that think only on a token budget and refuse an effort
+#: level, by the front of their id. Everything newer is the reverse: it
+#: takes `output_config.effort`, thinks adaptively, and answers a
+#: `budget_tokens` with a 400 (Opus 4.7 and later, Sonnet 5 and later, Haiku
+#: 5.5, every Fable). The list is the old ones because it is the one that
+#: cannot grow: a model released tomorrow takes an effort level.
+BUDGET_ONLY_MODELS = (
+    "claude-3",
+    "claude-haiku-4-5",
+    "claude-sonnet-4-5",
+    "claude-opus-4-5",
+    "claude-opus-4-1",
+    "claude-opus-4-0",
+    "claude-sonnet-4-0",
+    "claude-opus-4-2",    # claude-opus-4-20250514
+    "claude-sonnet-4-2",  # claude-sonnet-4-20250514
+)
+
+#: Anthropic's effort word for each OpenAI-style reasoning effort. Anthropic
+#: has no `minimal`; its lowest level is `low`. `off` and `none` are absent
+#: on purpose: the current models cannot be told not to think, so asking for
+#: none sends no effort and leaves the model its own default.
+EFFORT_LEVELS = {
+    "minimal": "low",
+    "low": "low",
+    "medium": "medium",
+    "high": "high",
+    "xhigh": "xhigh",
+    "max": "max",
+}
+
 #: `max_tokens` has to exceed `budget_tokens` or the request is refused, so a
 #: thinking budget needs room for a reply behind it.
 THINKING_HEADROOM = 4096
@@ -324,6 +355,21 @@ def _translate_tool_choice(tool_choice: object) -> Optional[dict]:
     return None
 
 
+def _thinks_on_a_budget(model: str) -> bool:
+    return str(model or "").startswith(BUDGET_ONLY_MODELS)
+
+
+def _effort_for(effort: object, model: str) -> Optional[str]:
+    """Anthropic's effort level for a caller's reasoning effort, or None."""
+    if not isinstance(effort, str):
+        return None
+    level = EFFORT_LEVELS.get(effort.strip().lower())
+    if level == "xhigh" and "-4-6" in str(model):
+        # The 4.6 models stop at `high` below `max`; `xhigh` came later.
+        return "high"
+    return level
+
+
 def _thinking_for(effort: object) -> Optional[dict]:
     if not isinstance(effort, str):
         return None
@@ -397,11 +443,29 @@ def transform_to_anthropic_messages(
     if system_text:
         body["system"] = system_text
 
-    thinking = _thinking_for(chat_request.get("reasoning_effort"))
-    if thinking is None:
+    asked = chat_request.get("reasoning_effort")
+    if not isinstance(asked, str):
         reasoning = chat_request.get("reasoning")
-        if isinstance(reasoning, dict):
-            thinking = _thinking_for(reasoning.get("effort"))
+        asked = reasoning.get("effort") if isinstance(reasoning, dict) else None
+    thinking = None
+    if _thinks_on_a_budget(model):
+        thinking = _thinking_for(asked)
+    else:
+        # A current model thinks adaptively and is steered by an effort
+        # level. Sent as a budget instead, the effort was refused with a 400
+        # by every model from Opus 4.7 on; sent as nothing, the model chose
+        # its own depth, and on 2026-11-24 a reviewer with no effort set
+        # spent 550,000 hidden reasoning tokens in seventy-five minutes.
+        level = _effort_for(asked, model)
+        if level:
+            body["output_config"] = {"effort": level}
+            body["thinking"] = {"type": "adaptive"}
+            # Thinking fixes the sampling parameters here too.
+            chat_request = {
+                k: v
+                for k, v in chat_request.items()
+                if k not in ("temperature", "top_p")
+            }
     if thinking:
         budget = thinking["budget_tokens"]
         if ceiling:

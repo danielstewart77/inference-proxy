@@ -496,6 +496,9 @@ async def listing_for(
 HARNESS_EFFORT_LEVELS = {
     "claude": ("low", "medium", "high", "xhigh", "max"),
     "codex": ("minimal", "low", "medium", "high", "xhigh"),
+    # dsh sends the level as the chat wire's `reasoning_effort`, under its
+    # own name, and knows every one of these.
+    "dsh": ("minimal", "low", "medium", "high", "xhigh", "max"),
 }
 
 

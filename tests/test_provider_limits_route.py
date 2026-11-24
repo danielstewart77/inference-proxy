@@ -369,8 +369,9 @@ def test_each_harness_is_offered_only_the_effort_words_it_accepts(client, monkey
 
     assert levels("claude", "claude-opus-5") == ["low", "high", "max"]
     assert levels("codex", "gpt-5.6") == ["minimal", "low", "high"]
-    # dsh passes no effort to its model, so it is offered none.
-    assert levels("dsh", "gpt-5.6") == []
+    # dsh sends the level on the chat wire under its own name, and knows
+    # every one of them.
+    assert levels("dsh", "gpt-5.6") == ["minimal", "low", "high", "max"]
 
 
 def test_effort_levels_set_when_a_model_is_added_come_back_on_the_listing(
